@@ -383,7 +383,7 @@ export interface NoticeEntryItem {
 }
 
 export interface NoticeEntry {
-  /** Stable unique id, e.g. `"update-v1.2.0"`. */
+  /** Stable unique id, e.g. `"update-v2.3.0"`. */
   id: string;
   category: NoticeCategory;
   version?: string;
