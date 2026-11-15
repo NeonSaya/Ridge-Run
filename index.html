@@ -4,8 +4,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#081511">
+<meta name="description" content="纯前端无尽爬坡竞速游戏：在晨雾松林、高寒冰川、赤岩峡谷与极夜山巅间冲刺，支持 PB / 好友幽灵同屏竞速、每日试炼、战书挑战与 1200×630 战术战报。">
+<meta property="og:type" content="website">
+<meta property="og:locale" content="zh_CN">
+<meta property="og:title" content="山脊冲刺 · Ridge Run">
+<meta property="og:description" content="把油门踩进晨雾里——纯前端无尽爬坡竞速，支持同屏幽灵、每日固定种子试炼、战书挑战与 1200×630 战术战报。">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="山脊冲刺 · Ridge Run">
+<meta name="twitter:description" content="纯前端无尽爬坡竞速游戏：四大生态赛段、特技氮气、同屏幽灵竞速、每日试炼与战书挑战。">
 <title>山脊冲刺 · Ridge Run</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23071511'/%3E%3Cpath d='M3 25 12.7 7l4.5 8.1L21.3 7 29 25H3Z' fill='none' stroke='%23f0b15e' stroke-width='1.6' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="icon" type="image/svg+xml" href="./icon.svg">
+<link rel="manifest" href="./manifest.webmanifest">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet">
@@ -43,7 +52,7 @@
           <span id="coinValue">0</span>
           <span id="runCoinDelta" class="coin-delta is-hidden"></span>
         </div>
-        <button class="fov-chip" id="fovBtn" type="button" title="切换镜头可视宽度（快捷键 [ / ]）" aria-label="切换镜头可视宽度">
+        <button class="fov-chip" id="fovBtn" type="button" title="当前实际可视宽度（含速度/氮气动态拉远）；点击切换基础视野，快捷键 [ / ]" aria-label="当前镜头实际可视宽度">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M4 8V5h3M20 8V5h-3M4 16v3h3M20 16v3h-3"/>
             <circle cx="12" cy="12" r="2.6"/>
@@ -166,7 +175,7 @@
             <span class="mode-card-kicker">RIVAL LINK</span>
             <span class="mode-card-body">
               <strong>战书挑战</strong>
-              <small id="challengeBtnMeta">粘贴挑战码 / 打开好友战书</small>
+              <small id="challengeBtnMeta">粘贴挑战码 / 导入战报 PNG</small>
             </span>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 18 18 6M9 6h9v9"/></svg>
           </button>
@@ -289,7 +298,7 @@
     <div class="modal challenge-modal">
       <p class="eyebrow">Rival challenge</p>
       <h2 id="challengeTitle">山脊战书</h2>
-      <p class="modal-copy">粘贴好友发来的挑战码，或直接打开带 <code>#challenge=</code> 的战书链接。每日战书强制使用同种子、官方车型与 Lv.5 公平规格；常规战书同跑标准地形，各自使用车库当前车辆与改装。</p>
+      <p class="modal-copy">粘贴好友发来的挑战码、直接打开带 <code>#challenge=</code> 的战书链接，或导入游戏导出的战报 PNG（内嵌完整战书）。每日战书强制使用同种子、官方车型与 Lv.5 公平规格；常规战书同跑标准地形，各自使用车库当前车辆与改装。</p>
       <label class="field-label" for="challengeInput">挑战码 / 战书链接</label>
       <textarea id="challengeInput" rows="3" spellcheck="false" placeholder="RR2.…"></textarea>
       <p class="challenge-status" id="challengeStatus" role="status"></p>
@@ -297,6 +306,8 @@
         <button class="btn-primary" id="challengeLoadBtn" type="button">载入战书
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
         </button>
+        <button class="btn-ghost" id="challengePngBtn" type="button">导入战报 PNG</button>
+        <input id="challengePngInput" type="file" accept="image/png" hidden>
         <button class="btn-ghost" id="challengeCloseBtn" type="button">取消</button>
       </div>
     </div>
@@ -315,6 +326,10 @@
       </header>
       <div class="poster-frame">
         <canvas id="posterCanvas" width="1200" height="630" aria-label="本局战术战报"></canvas>
+      </div>
+      <div class="poster-code-bar">
+        <label class="poster-code-label" for="posterCodeOutput">CHALLENGE CODE / 完整战书码（下载 PNG 自动内嵌）</label>
+        <input id="posterCodeOutput" class="poster-code-input" type="text" readonly placeholder="单程满 1m 后自动生成完整战书码" aria-label="本局完整战书码">
       </div>
       <footer class="poster-actions">
         <button class="btn-primary" id="posterDownloadBtn" type="button">下载 PNG 战报

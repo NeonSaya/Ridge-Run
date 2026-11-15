@@ -186,8 +186,8 @@ export class Overlays {
         result.reason === "crash" ? "试炼中止" : "试炼结束";
       if (result.dailyRolledOver) {
         this.overCopy.textContent = result.dailyRecord
-          ? `刚刚刷新的试炼最佳已锁定为 ${result.best}m。UTC 零点已过，下一局将切换今日新种子与官方车型。`
-          : "本局每日试炼成绩已完整记入原日期榜单。UTC 零点已过，下一局将切换今日新种子与官方车型。";
+          ? `本局金币已入账，旧日试炼最佳（${result.best}m）可在当前结算页生成战报或复制战书；UTC 零点已过，返回首页、刷新页面或开始下一局将切换今日新榜单。`
+          : "本局金币已入账，成绩可在当前结算页生成战报或复制战书；UTC 零点已过，返回首页、刷新页面或开始下一局将切换今日新榜单。";
       } else {
         this.overCopy.textContent = result.dailyRecord
           ? `今日最佳刷新至 ${result.best}m。明日 UTC 零点，新的山脊会重新生成。`

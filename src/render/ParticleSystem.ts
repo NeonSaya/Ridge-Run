@@ -7,18 +7,26 @@ import type {
 import { clamp, TAU, withAlpha } from "../utils";
 
 const MAX_PARTICLES = 340;
+const FLAME_COLORS = ["#eafff7", "#a9f2e4", "#f6c66d"] as const;
 
 /** Dust, exhaust smoke, sparks, landing streaks, shockwaves and coin pops. */
 export class ParticleSystem {
   private particles: Particle[] = [];
+  private overwriteCursor = 0;
+  private nozzleBuf = { x: 0, y: 0, dx: 0, dy: 0 };
 
   clear(): void {
-    this.particles = [];
+    this.particles.length = 0;
+    this.overwriteCursor = 0;
   }
 
   private add(p: Particle): void {
-    if (this.particles.length > MAX_PARTICLES) this.particles.shift();
-    this.particles.push(p);
+    if (this.particles.length <= MAX_PARTICLES) {
+      this.particles.push(p);
+      return;
+    }
+    this.particles[this.overwriteCursor] = p;
+    this.overwriteCursor = (this.overwriteCursor + 1) % this.particles.length;
   }
 
   spawnDust(x: number, y: number, dir: number, carVx: number): void {
@@ -43,12 +51,12 @@ export class ParticleSystem {
     const s = Math.sin(car.angle);
     const lx = config.exhaustPoint.x;
     const ly = config.exhaustPoint.y;
-    return {
-      x: car.x + lx * c - ly * s,
-      y: car.y + lx * s + ly * c,
-      dx: config.exhaustDir.x * c - config.exhaustDir.y * s,
-      dy: config.exhaustDir.x * s + config.exhaustDir.y * c,
-    };
+    const out = this.nozzleBuf;
+    out.x = car.x + lx * c - ly * s;
+    out.y = car.y + lx * s + ly * c;
+    out.dx = config.exhaustDir.x * c - config.exhaustDir.y * s;
+    out.dy = config.exhaustDir.x * s + config.exhaustDir.y * c;
+    return out;
   }
 
   spawnExhaust(car: CarState, config: VehicleConfig): void {
@@ -72,7 +80,6 @@ export class ParticleSystem {
     intensity: number,
   ): void {
     const n = this.nozzle(car, config);
-    const colors = ["#eafff7", "#a9f2e4", "#f6c66d"];
     for (let i = 0; i < 2; i++) {
       const spread = (Math.random() - 0.5) * 0.55;
       const cs = Math.cos(spread);
@@ -89,7 +96,7 @@ export class ParticleSystem {
         life: 0.15 + Math.random() * 0.2,
         maxLife: 0.35,
         size: 0.075 + Math.random() * 0.08 + intensity * 0.04,
-        color: colors[Math.floor(Math.random() * colors.length)]!,
+        color: FLAME_COLORS[Math.floor(Math.random() * FLAME_COLORS.length)]!,
       });
     }
   }
@@ -255,13 +262,15 @@ export class ParticleSystem {
 
   update(dt: number): void {
     const particles = this.particles;
-    for (let i = particles.length - 1; i >= 0; i--) {
+    const len = particles.length;
+    if (len === 0) return;
+    const flameDrag = Math.exp(-1.9 * dt);
+    const normalDrag = Math.exp(-0.7 * dt);
+    let write = 0;
+    for (let i = 0; i < len; i++) {
       const p = particles[i]!;
       p.life -= dt;
-      if (p.life <= 0) {
-        particles.splice(i, 1);
-        continue;
-      }
+      if (p.life <= 0) continue;
       if (p.type !== "shockwave") {
         const gravity =
           p.type === "dust"
@@ -274,69 +283,115 @@ export class ParticleSystem {
                   ? -0.4
                   : 5.2;
         p.vy += gravity * dt;
-        p.vx *= Math.exp(-(p.type === "flame" ? 1.9 : 0.7) * dt);
+        p.vx *= p.type === "flame" ? flameDrag : normalDrag;
         p.x += p.vx * dt;
         p.y += p.vy * dt;
         if (p.type === "coin" && p.phase !== undefined) p.phase += dt * 12;
       }
+      particles[write++] = p;
     }
+    particles.length = write;
+    if (this.overwriteCursor >= write) this.overwriteCursor = 0;
   }
 
   draw(rc: RenderContext, front: boolean): void {
     const { ctx, width: W, height: H, view } = rc;
-    const toX = (x: number): number => W * 0.5 + (x - view.x) * view.scale;
-    const toY = (y: number): number => H * 0.5 + (y - view.y) * view.scale;
+    const particles = this.particles;
+    const len = particles.length;
+    if (len === 0) return;
+
+    const halfW = W * 0.5;
+    const halfH = H * 0.5;
+    const vx = view.x;
+    const vy = view.y;
+    const scale = view.scale;
 
     ctx.save();
-    for (const p of this.particles) {
-      const isFront =
-        p.type === "spark" || p.type === "streak" || p.type === "coin";
-      if (isFront !== front) continue;
-      const x = toX(p.x);
-      const y = toY(p.y);
-      if (x < -30 || x > W + 30 || y < -30 || y > H + 30) continue;
-      const k = clamp(p.life / p.maxLife, 0, 1);
-      const r = Math.max(1, p.size * view.scale * (1.2 - k * 0.45));
 
-      if (p.type === "shockwave") {
-        const progress = 1 - k;
-        ctx.globalCompositeOperation = "lighter";
-        ctx.globalAlpha = k * 0.68;
-        ctx.strokeStyle = p.color ?? "#f0b15e";
-        ctx.lineWidth = 1.2 + k * 2.4;
-        ctx.beginPath();
-        ctx.arc(x, y, Math.max(1, (p.radius ?? 4) * progress * view.scale), 0, TAU);
-        ctx.stroke();
-        ctx.globalAlpha = 1;
-        ctx.globalCompositeOperation = "source-over";
-        continue;
-      }
-
-      if (p.type === "flame") {
-        ctx.globalCompositeOperation = "lighter";
-        ctx.globalAlpha = k * 0.9;
-        ctx.fillStyle = p.color ?? "#a9f2e4";
+    if (!front) {
+      // Pass 1: source-over (dust & smoke)
+      ctx.globalAlpha = 1;
+      for (let i = 0; i < len; i++) {
+        const p = particles[i]!;
+        if (p.type !== "dust" && p.type !== "smoke") continue;
+        const x = halfW + (p.x - vx) * scale;
+        const y = halfH + (p.y - vy) * scale;
+        if (x < -30 || x > W + 30 || y < -30 || y > H + 30) continue;
+        const k = clamp(p.life / p.maxLife, 0, 1);
+        const r = Math.max(1, p.size * scale * (1.2 - k * 0.45));
+        if (p.type === "dust") {
+          ctx.fillStyle = p.color
+            ? withAlpha(p.color, k * 0.4)
+            : `rgba(220,169,106,${k * 0.23})`;
+        } else {
+          ctx.fillStyle = `rgba(223,216,194,${k * 0.12})`;
+        }
         ctx.beginPath();
         ctx.arc(x, y, r, 0, TAU);
         ctx.fill();
-        ctx.globalAlpha = k * 0.6;
-        ctx.fillStyle = "#f4fff9";
-        ctx.beginPath();
-        ctx.arc(x, y, r * 0.42, 0, TAU);
-        ctx.fill();
-        ctx.globalAlpha = 1;
-        ctx.globalCompositeOperation = "source-over";
-        continue;
       }
 
-      if (p.type === "dust") {
-        ctx.fillStyle = p.color
-          ? withAlpha(p.color, k * 0.4)
-          : `rgba(220,169,106,${k * 0.23})`;
-      } else if (p.type === "smoke") {
-        ctx.fillStyle = `rgba(223,216,194,${k * 0.12})`;
-      } else if (p.type === "streak") {
-        ctx.globalCompositeOperation = "lighter";
+      // Pass 2: lighter (flame & shockwave)
+      let lighterSet = false;
+      for (let i = 0; i < len; i++) {
+        const p = particles[i]!;
+        if (p.type !== "flame" && p.type !== "shockwave") continue;
+        const x = halfW + (p.x - vx) * scale;
+        const y = halfH + (p.y - vy) * scale;
+        if (x < -30 || x > W + 30 || y < -30 || y > H + 30) continue;
+        if (!lighterSet) {
+          ctx.globalCompositeOperation = "lighter";
+          lighterSet = true;
+        }
+        const k = clamp(p.life / p.maxLife, 0, 1);
+        if (p.type === "shockwave") {
+          const progress = 1 - k;
+          ctx.globalAlpha = k * 0.68;
+          ctx.strokeStyle = p.color ?? "#f0b15e";
+          ctx.lineWidth = 1.2 + k * 2.4;
+          ctx.beginPath();
+          ctx.arc(x, y, Math.max(1, (p.radius ?? 4) * progress * scale), 0, TAU);
+          ctx.stroke();
+        } else {
+          const r = Math.max(1, p.size * scale * (1.2 - k * 0.45));
+          ctx.globalAlpha = k * 0.9;
+          ctx.fillStyle = p.color ?? "#a9f2e4";
+          ctx.beginPath();
+          ctx.arc(x, y, r, 0, TAU);
+          ctx.fill();
+          ctx.globalAlpha = k * 0.6;
+          ctx.fillStyle = "#f4fff9";
+          ctx.beginPath();
+          ctx.arc(x, y, r * 0.42, 0, TAU);
+          ctx.fill();
+        }
+      }
+      ctx.restore();
+      return;
+    }
+
+    // Front layer: spark, streak (lighter) and coin
+    let isLighter = false;
+    const setLighter = (want: boolean): void => {
+      if (isLighter !== want) {
+        ctx.globalCompositeOperation = want ? "lighter" : "source-over";
+        isLighter = want;
+      }
+    };
+
+    for (let i = 0; i < len; i++) {
+      const p = particles[i]!;
+      if (p.type !== "spark" && p.type !== "streak" && p.type !== "coin") {
+        continue;
+      }
+      const x = halfW + (p.x - vx) * scale;
+      const y = halfH + (p.y - vy) * scale;
+      if (x < -30 || x > W + 30 || y < -30 || y > H + 30) continue;
+      const k = clamp(p.life / p.maxLife, 0, 1);
+      const r = Math.max(1, p.size * scale * (1.2 - k * 0.45));
+
+      if (p.type === "streak") {
+        setLighter(true);
         ctx.globalAlpha = k * 0.86;
         ctx.strokeStyle = p.color ?? "#f4c76d";
         ctx.lineWidth = Math.max(1, r * 0.46);
@@ -344,19 +399,16 @@ export class ParticleSystem {
         ctx.beginPath();
         ctx.moveTo(x, y);
         ctx.lineTo(
-          x - p.vx * (p.length ?? 0.3) * view.scale * 0.12,
-          y - p.vy * (p.length ?? 0.3) * view.scale * 0.12,
+          x - p.vx * (p.length ?? 0.3) * scale * 0.12,
+          y - p.vy * (p.length ?? 0.3) * scale * 0.12,
         );
         ctx.stroke();
-        ctx.globalAlpha = 1;
-        ctx.globalCompositeOperation = "source-over";
-        continue;
       } else if (p.type === "coin") {
         ctx.save();
         ctx.translate(x, y);
         ctx.rotate(Math.sin(p.phase ?? 0) * 0.18);
         ctx.scale(Math.max(0.14, Math.abs(Math.cos(p.phase ?? 0))), 1);
-        const coinR = Math.max(3, p.size * view.scale);
+        const coinR = Math.max(3, p.size * scale);
         ctx.globalCompositeOperation = "lighter";
         ctx.globalAlpha = k;
         ctx.fillStyle = "#f4c76d";
@@ -377,19 +429,14 @@ export class ParticleSystem {
         ctx.textBaseline = "middle";
         ctx.fillText("+", 0, 0.5);
         ctx.restore();
-        continue;
+        isLighter = false;
       } else {
-        ctx.globalCompositeOperation = "lighter";
+        setLighter(true);
         ctx.fillStyle = p.color ?? "#f4c76d";
         ctx.globalAlpha = k * 0.8;
-      }
-
-      ctx.beginPath();
-      ctx.arc(x, y, r, 0, TAU);
-      ctx.fill();
-      if (p.type === "spark") {
-        ctx.globalCompositeOperation = "source-over";
-        ctx.globalAlpha = 1;
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, TAU);
+        ctx.fill();
       }
     }
     ctx.restore();

@@ -25,10 +25,11 @@
 
 ## 镜头视野
 
-- 默认可视宽度为 `36m`，首页与暂停菜单都提供「镜头视野 · CAMERA FOV」面板。
+- 默认基础视野为 `36m`，首页与暂停菜单都提供「镜头视野 · CAMERA FOV」面板。
 - 滑杆范围 `28–52m`、步进 `1m`；HUD 右上角视野按钮在 `32m / 36m / 41m / 46m` 四档预设间循环。
 - 局内按 `[` / `]`（或 `-` / `=`）每次微调 `2m`。
-- 设置写入存档 `cameraWidth`，刷新后保留；缩放按当前视口宽度线性匹配目标米数（`scale = viewportWidth / targetWidth`），从手机竖屏到 2K / 超宽屏均忠实呈现所选视野。
+- 基础缩放按当前视口宽度线性匹配目标米数（`baseScale = viewportWidth / cameraWidth`），从手机竖屏到 2K / 超宽屏均忠实呈现所选基准视野；高速行驶（最多缩小 10% 缩放）与氮气加速（再缩小 6% 缩放）会平滑拉远镜头，且 HUD 右上角数字实时反映当前实际可视宽度（`viewportWidth / camera.scale`），暂停面板同时标出基础档位与动态视野。
+- 设置写入存档 `cameraWidth`，刷新后保留；若存档内该字段越界（`<28` 或 `>52`）会自动夹紧并提示修复。
 
 ## 特技与氮气
 
@@ -93,7 +94,7 @@ HUD 顶部同时显示当前 `STAGE 0X · 赛段名`，以及激活中的 `NITRO
 
 - 以 UTC 日期（如 `2026-11-06`）做 FNV-1a 哈希得到非零 32 位种子；所有玩家当天的地形、冰面/泥地、涡流与道具分布完全一致。
 - 官方车型为 `VEHICLE_ORDER[dailySeed % 3]`；无论是否解锁，当日试炼统一使用四项 `Lv.5` 公平规格，免费体验。
-- 存档记录 `dailyDate`、`dailyBest`、`dailyFirstClaimed`、`dailyGhost`。若跨越 UTC 零点才完成一局每日试炼，系统会先把该局成绩与幽灵完整结算并写入存档，直到下次点击发车或回到主页时再切换当日新榜单。
+- 存档记录 `dailyDate`、`dailyBest`、`dailyFirstClaimed`、`dailyGhost`。若跨越 UTC 零点才完成一局每日试炼，系统会先发放该局金币并在当前结算页保留成绩供生成战报与复制战书；返回首页、刷新页面或开始下一局时切换到当日新 UTC 榜单（重置 `dailyBest` / `dailyGhost`，累计金币不受影响）。
 - 奖励：
 
 | 条件 | 奖励 |
@@ -132,8 +133,8 @@ HUD 顶部同时显示当前 `STAGE 0X · 赛段名`，以及激活中的 `NITRO
 
 - 战报为固定 `1200 × 630` 的 Canvas，背景取自本局最远抵达赛段的渐变天空、视差山脊、太阳/极光、胶片颗粒与 Alpine Dusk 边框。
 - 视觉中心用 `VehicleRenderer` 绘制本局载具（`#07` / `#12` / `#88`）的高清侧视涂装；左侧数据栏展示最终距离、纪录徽章、本程金币、空翻、最高完美连击、悬赏收益与四个赛段徽章。
-- 底部铭牌包含 `RIDGE RUN · 山脊冲刺`、日期、模式、种子编号与挑战码摘要。
-- 「下载 PNG 战报」通过 `<a download="ridge-run-XXXXm.png">` 导出；「复制挑战链接」与结算页共用剪贴板逻辑，失败时自动回退到 `execCommand` 文本框复制。
+- 底部铭牌包含 `RIDGE RUN · 山脊冲刺`、日期、模式、种子编号与挑战码摘要，弹窗下方提供可直接复制的完整战书码栏。
+- 「下载 PNG 战报」通过 `<a download="ridge-run-XXXXm.png">` 导出，并把完整 `RR2.` 战书码写入 PNG `tEXt` 元数据块（`ridge-run-challenge`）；好友在首页「战书挑战 → 导入战报 PNG」直接选择该图片即可载入完整幽灵对决。「复制挑战链接」与结算页共用剪贴板逻辑，失败时自动回退到 `execCommand` 文本框复制。
 
 ## 车库
 
@@ -190,18 +191,19 @@ HUD 顶部同时显示当前 `STAGE 0X · 赛段名`，以及激活中的 `NITRO
 
 ## 本地开发
 
-需要 Node.js 18+。
+需要 Node.js 22.18+（推荐 Node 24 LTS，与 CI 一致；零运行时依赖）。
 
 ```sh
 npm install
+npm test          # Node 内置测试运行器执行 tests/*.test.ts（零额外测试依赖）
 npm run dev       # Vite 开发服务器，默认 http://localhost:5173
 npm run build     # tsc 类型检查 + 生成 dist/ 静态产物
 npm run preview   # 本地预览构建结果
 ```
 
-`vite.config.ts` 使用 `base: "./"`，`dist/` 可直接部署到 GitHub Pages、 itch.io 或任意静态托管目录。
+`vite.config.ts` 使用 `base: "./"`，`dist/` 可直接部署到 GitHub Pages、 itch.io 或任意静态托管目录；同时提供 `public/icon.svg`、`public/manifest.webmanifest` 与 `LICENSE`（MIT）。
 
-推送到 `main` 后，`.github/workflows/deploy.yml` 会自动执行 `npm ci && npm run build`，并通过 GitHub Pages Actions 发布 `dist/`；仓库本身不需要提交构建产物。
+推送到 `main` 后，`.github/workflows/deploy.yml` 会自动执行 `npm ci && npm test && npm run build`，并通过 GitHub Pages Actions 发布 `dist/`；仓库本身不需要提交构建产物。
 
 ## 技术
 
@@ -209,38 +211,48 @@ Vite + TypeScript，严格模式；Canvas 2D 绘制全部场景与三款载具�
 
 ```text
 src/
-├── main.ts                  # 主循环、输入、状态机、模式/幽灵/悬赏/公报/分享装配
+├── main.ts                  # 主循环、输入、状态机、物理/特效/存档协调
+├── camera.ts                # 线性 FOV 缩放、速度/氮气动态视野与镜头阻尼
+├── items.ts                 # Chunk 道具生成与磁铁吸附更新
 ├── types.ts                 # 存档 / 载具 / 物理 / 幽灵 / 悬赏 / 公报 / 渲染类型
 ├── constants.ts             # 物理常数、车型规格、升级曲线、幽灵/赏金参数
 ├── daily.ts                 # UTC 日期、每日种子、公平规格、每日结算
 ├── missions.ts              # 六类悬赏模板、目标/奖励档位、追踪与轮换
 ├── notices.ts               # 山脊公报数据、版本记录与最新未读 id
 ├── storage.ts               # v2 存档、v1 迁移、坏档备份/只读降级、字段校验与错误通知
-├── utils.ts
+├── utils.ts                 # 数学工具与有界十六进制色彩缓存
 ├── style.css                # 全局样式、弹窗、公报与响应式布局
 ├── audio/AudioController.ts # Web Audio 合成器
 ├── ghost/
 │   └── GhostSystem.ts       # 轨迹录制、长途倍频压缩、RR2(v1–v3) 编解码、防伪校验与回放
 ├── physics/
 │   ├── terrain.ts           # heightAt / slopeAt / 种子相位与频率调制
-│   ├── biomes.ts            # 四大生态调色板、带种子冰面/泥地、上升气流
-│   └── VehiclePhysics.ts    # 多轮悬挂刚体求解器（氮气 / 地表抓地）
+│   ├── biomes.ts            # 四大生态调色板缓存、预排序冰面/泥地、上升气流
+│   └── VehiclePhysics.ts    # 多轮悬挂刚体求解器（氮气 / 地表抓地 / 自然倒车）
 ├── render/
-│   ├── SkyRenderer.ts       # 分赛段天空、极光与星空
-│   ├── MountainRenderer.ts  # 分赛段远山与雪线
-│   ├── TerrainRenderer.ts   # 地表、冰面/泥地、赛段门牌、风口
-│   ├── VehicleRenderer.ts   # 三套车体、夜间大灯、幽灵全息与终点旗
+│   ├── SkyRenderer.ts       # 分赛段天空、极光、星空与渐变缓存
+│   ├── MountainRenderer.ts  # 视差远山（批量树冠绘制与点缓冲复用）
+│   ├── TerrainRenderer.ts   # 地表、冰面/泥地批量结晶折线、赛段门牌、风口
+│   ├── VehicleRenderer.ts   # 三套车体渐变缓存、夜间大灯、幽灵全息与终点旗
 │   ├── ItemRenderer.ts      # 金币 / 油桶 / 气瓶 / 磁铁
-│   ├── ParticleSystem.ts    # 尾气、氮气尾焰、泥点与雪雾
+│   ├── ParticleSystem.ts    # 紧凑数组池与混合状态合批（尾气/氮气/泥点/雪雾）
 │   ├── JumpFxRenderer.ts    # 空翻、落地、磁铁引力圈、视野外雷达
-│   └── AtmosphereRenderer.ts
+│   └── AtmosphereRenderer.ts# 漂浮粒子与缓存极夜暗角
 └── ui/
     ├── HudController.ts
-    ├── GarageModal.ts
+    ├── GarageModal.ts       # 车库弹窗与尺寸脏标记缓存预览
     ├── MissionBoard.ts      # 首页/暂停/结算三处悬赏看板
-    ├── PosterGenerator.ts   # 1200×630 战术战报 Canvas
+    ├── NoticeModal.ts       # 山脊公报弹窗、未读标记与键盘切换
+    ├── ChallengeController.ts # 每日状态、战书读写、剪贴板与战报 PNG 导入/导出
+    ├── PosterGenerator.ts   # 1200×630 战术战报 Canvas 与 PNG tEXt 战书嵌入
     ├── Overlays.ts
     └── dom.ts
+tests/
+├── ts-loader.mjs            # Node ESM TypeScript 解析钩子
+├── ghost.test.ts            # ghost v1/v2/v3、长途抽稀、坏码与 PNG 战书测试
+├── daily-missions.test.ts   # UTC 每日种子/结算与悬赏轮换测试
+├── storage.test.ts          # v1 迁移、cameraWidth 越界修复、备份与读写失败测试
+└── physics-camera.test.ts   # 起跑平坡、刹车/倒车、底盘接地与动态 FOV 测试
 ```
 
 ### 存档兼容
@@ -248,7 +260,7 @@ src/
 `ridge-run-v2` 新增字段为 `cameraWidth`、`bestGhost`、`dailyDate`、`dailyBest`、`dailyFirstClaimed`、`dailyGhost`、`missions`、`completedMissions` 与 `lastSeenNoticeId`。
 
 - 旧 `ridge-run-v2` 存档会自动补齐新字段，保留原有金币、常规赛最佳、已解锁车辆与全部改装等级。
-- `cameraWidth` 记录镜头可视宽度，缺失或非法时回落到默认 `36m`，并限制在 `28–52m` 范围内。
+- `cameraWidth` 记录镜头可视宽度，缺失或非法时回落到默认 `36m`；超出 `28–52m` 合法区间时会自动夹紧并记入 `repairedFields`（触发修复 Toast 提示）。
 - `lastSeenNoticeId` 记录最近一次打开的山脊公报条目；缺失时视为从未阅读，首页会亮起未读红点，打开公报后立即持久化。
 - 旧 `ridge-run-v1` 存档继续走迁移：继承 `best` 与 `coins`，初始化车库后写入 `ridge-run-v2`。
 - 损坏且可解析的部分存档保留有效字段、修复异常值（拒绝 `NaN`/`Infinity`/负值/超限数），完全损坏的 JSON 或非对象载荷会先尝试备份到 `ridge-run-v2-backup` / `ridge-run-v1-backup`；当存储读取被浏览器拦截，或主存档 `ridge-run-v2` 损坏且备份写入失败时，均会保持只读内存会话避免覆盖原有存档（直到显式重置/清理存储或重载后成功备份）；任何初始迁移、恢复或运行期读写失败都会通过页面 Toast 明确提示玩家。

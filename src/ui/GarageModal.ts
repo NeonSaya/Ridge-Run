@@ -55,6 +55,7 @@ export class GarageModal {
   private readonly coinValue = byId("garageCoins");
   private readonly actionBtn = byId<HTMLButtonElement>("garageActionBtn");
   private readonly preview = byId<HTMLCanvasElement>("garagePreview");
+  private readonly previewCtx = this.preview.getContext("2d");
 
   private readonly save: GameSave;
   private readonly callbacks: GarageCallbacks;
@@ -63,6 +64,10 @@ export class GarageModal {
   private readonly dotButtons: HTMLButtonElement[] = [];
   private index = 0;
   private openFlag = false;
+  private previewDirty = true;
+  private previewCssW = 0;
+  private previewCssH = 0;
+  private previewDpr = 1;
 
   constructor(save: GameSave, callbacks: GarageCallbacks) {
     this.save = save;
@@ -73,6 +78,9 @@ export class GarageModal {
     this.prevBtn.addEventListener("click", () => this.cycle(-1));
     this.nextBtn.addEventListener("click", () => this.cycle(1));
     this.actionBtn.addEventListener("click", () => this.runAction());
+    window.addEventListener("resize", () => {
+      this.previewDirty = true;
+    });
 
     for (const def of UPGRADES) {
       const row = document.createElement("div");
@@ -135,9 +143,9 @@ export class GarageModal {
       VEHICLE_ORDER.indexOf(this.save.selectedVehicle),
     );
     this.openFlag = true;
-    this.render();
+    this.previewDirty = true;
     openOverlay(this.root, this.closeBtn);
-    this.drawPreview(performance.now() / 1000);
+    this.render();
   }
 
   close(): void {
@@ -327,23 +335,28 @@ export class GarageModal {
   }
 
   private drawPreview(time: number): void {
-    const ctx = this.preview.getContext("2d");
+    const ctx = this.previewCtx;
     if (!ctx) return;
-    const rect = this.preview.getBoundingClientRect();
-    if (rect.width < 2 || rect.height < 2) return;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const width = Math.max(1, Math.round(rect.width * dpr));
-    const height = Math.max(1, Math.round(rect.height * dpr));
-    if (this.preview.width !== width || this.preview.height !== height) {
-      this.preview.width = width;
-      this.preview.height = height;
+    if (this.previewDirty || this.previewCssW < 2 || this.previewCssH < 2) {
+      const rect = this.preview.getBoundingClientRect();
+      if (rect.width < 2 || rect.height < 2) return;
+      this.previewCssW = rect.width;
+      this.previewCssH = rect.height;
+      this.previewDpr = Math.min(window.devicePixelRatio || 1, 2);
+      const width = Math.max(1, Math.round(rect.width * this.previewDpr));
+      const height = Math.max(1, Math.round(rect.height * this.previewDpr));
+      if (this.preview.width !== width || this.preview.height !== height) {
+        this.preview.width = width;
+        this.preview.height = height;
+      }
+      this.previewDirty = false;
     }
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, rect.width, rect.height);
+    ctx.setTransform(this.previewDpr, 0, 0, this.previewDpr, 0, 0);
+    ctx.clearRect(0, 0, this.previewCssW, this.previewCssH);
     this.renderer.drawPreview(
       ctx,
-      rect.width,
-      rect.height,
+      this.previewCssW,
+      this.previewCssH,
       this.currentVehicle,
       time,
     );

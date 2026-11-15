@@ -4,6 +4,8 @@ import { hash, TAU, withAlpha } from "../utils";
 /** Floating sun motes and a faint generated film grain. */
 export class AtmosphereRenderer {
   private noisePattern: CanvasPattern | null = null;
+  private vignetteKey = "";
+  private vignetteGrad: CanvasGradient | null = null;
 
   init(ctx: CanvasRenderingContext2D): void {
     try {
@@ -128,21 +130,27 @@ export class AtmosphereRenderer {
   drawGrain(rc: RenderContext): void {
     const { ctx, width: W, height: H, palette } = rc;
     if (palette.nightFactor > 0.01) {
+      const quantNight = Math.round(palette.nightFactor * 256) / 256;
+      const key = `${W}|${H}|${quantNight}`;
+      if (!this.vignetteGrad || this.vignetteKey !== key) {
+        const vignette = ctx.createRadialGradient(
+          W * 0.5,
+          H * 0.48,
+          Math.min(W, H) * 0.24,
+          W * 0.5,
+          H * 0.52,
+          Math.max(W, H) * 0.76,
+        );
+        vignette.addColorStop(0, "rgba(1,6,12,0)");
+        vignette.addColorStop(
+          1,
+          withAlpha("#010610", 0.16 + quantNight * 0.2),
+        );
+        this.vignetteGrad = vignette;
+        this.vignetteKey = key;
+      }
       ctx.save();
-      const vignette = ctx.createRadialGradient(
-        W * 0.5,
-        H * 0.48,
-        Math.min(W, H) * 0.24,
-        W * 0.5,
-        H * 0.52,
-        Math.max(W, H) * 0.76,
-      );
-      vignette.addColorStop(0, "rgba(1,6,12,0)");
-      vignette.addColorStop(
-        1,
-        withAlpha("#010610", 0.16 + palette.nightFactor * 0.2),
-      );
-      ctx.fillStyle = vignette;
+      ctx.fillStyle = this.vignetteGrad;
       ctx.fillRect(0, 0, W, H);
       ctx.restore();
     }

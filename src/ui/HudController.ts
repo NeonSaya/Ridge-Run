@@ -1,3 +1,4 @@
+import { cameraWidthTag } from "../camera";
 import {
   DEFAULT_CAMERA_WIDTH,
   JUMP_STAGES,
@@ -10,12 +11,7 @@ import type { FrameFxState, GameState, HudSnapshot } from "../types";
 import { clamp, formatCoins } from "../utils";
 import { byId } from "./dom";
 
-export function cameraWidthTag(width: number): string {
-  if (width <= 33) return "特写近景";
-  if (width <= 38) return width === DEFAULT_CAMERA_WIDTH ? "默认近景" : "标准近景";
-  if (width <= 43) return "均衡中景";
-  return "广角远景";
-}
+export { cameraWidthTag };
 
 export class HudController {
   private readonly app = byId("app");
@@ -77,6 +73,7 @@ export class HudController {
     nitro: -1,
     magnet: -1,
     combo: -1,
+    fovKey: "",
   };
 
   setMode(state: GameState): void {
@@ -180,6 +177,21 @@ export class HudController {
       this.speedFill.style.width = `${clamp(speed / 110, 0, 1) * 100}%`;
       this.last.speed = speed;
     }
+
+    const liveCam = Math.max(1, Math.round(snapshot.cameraWidth));
+    const baseCam = clamp(
+      Math.round(snapshot.baseCameraWidth),
+      MIN_CAMERA_WIDTH,
+      MAX_CAMERA_WIDTH,
+    );
+    const fovKey = `${liveCam}|${baseCam}`;
+    if (force || fovKey !== this.last.fovKey) {
+      this.hudFovValue.textContent = `${liveCam}m`;
+      const baseLabel = `${baseCam}m · ${cameraWidthTag(baseCam)}`;
+      this.pauseFovValue.textContent =
+        liveCam !== baseCam ? `${baseLabel}（动态 ${liveCam}m）` : baseLabel;
+      this.last.fovKey = fovKey;
+    }
   }
 
   setModeChip(
@@ -212,12 +224,18 @@ export class HudController {
     this.pauseMuteBtn.textContent = muted ? "声音：关" : "声音：开";
   }
 
-  setCameraWidth(width: number): void {
+  setCameraWidth(width: number, effectiveWidth?: number): void {
     const w = clamp(Math.round(width), MIN_CAMERA_WIDTH, MAX_CAMERA_WIDTH);
+    const liveW =
+      effectiveWidth !== undefined && Number.isFinite(effectiveWidth)
+        ? Math.max(1, Math.round(effectiveWidth))
+        : w;
     const label = `${w}m · ${cameraWidthTag(w)}`;
-    this.hudFovValue.textContent = `${w}m`;
+    this.hudFovValue.textContent = `${liveW}m`;
     this.introFovValue.textContent = label;
-    this.pauseFovValue.textContent = label;
+    this.pauseFovValue.textContent =
+      liveW !== w ? `${label}（动态 ${liveW}m）` : label;
+    this.last.fovKey = `${liveW}|${w}`;
     this.introFovRange.value = String(w);
     this.pauseFovRange.value = String(w);
     this.introFovRange.setAttribute("aria-valuetext", label);

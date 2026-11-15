@@ -227,8 +227,15 @@ function normalize(raw: unknown, repaired: string[]): GameSave {
   save.muted = source.muted === true;
 
   const parsedCam = parseFiniteNumber(source.cameraWidth);
-  if (source.cameraWidth !== undefined && (parsedCam === null || parsedCam <= 0)) {
-    repaired.push("cameraWidth");
+  if (source.cameraWidth !== undefined) {
+    if (
+      parsedCam === null ||
+      parsedCam <= 0 ||
+      Math.round(parsedCam) < MIN_CAMERA_WIDTH ||
+      Math.round(parsedCam) > MAX_CAMERA_WIDTH
+    ) {
+      repaired.push("cameraWidth");
+    }
   }
   save.cameraWidth =
     parsedCam !== null && parsedCam > 0

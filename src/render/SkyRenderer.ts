@@ -1,19 +1,39 @@
 import type { BiomePalette, RenderContext } from "../types";
 import { hash, TAU, withAlpha } from "../utils";
 
+const CLOUDS = [
+  { y: 0.17, x: 0.17, w: 0.28, h: 0.045, alpha: 0.055 },
+  { y: 0.27, x: 0.58, w: 0.33, h: 0.035, alpha: 0.08 },
+  { y: 0.39, x: 0.1, w: 0.2, h: 0.025, alpha: 0.045 },
+  { y: 0.22, x: 0.84, w: 0.24, h: 0.028, alpha: 0.05 },
+] as const;
+
 /** Palette-driven sky: alpine glow, glacier dawn, canyon sunset, night aurora. */
 export class SkyRenderer {
+  private skyGradKey = "";
+  private skyGrad: CanvasGradient | null = null;
+  private sunGradKey = "";
+  private sunGlowGrad: CanvasGradient | null = null;
+  private sunDiscGrad: CanvasGradient | null = null;
+  private auroraGradKey = "";
+  private auroraGrads: CanvasGradient[] = [];
+
   draw(rc: RenderContext): void {
     const { ctx, width: W, height: H, palette: p } = rc;
-    const g = ctx.createLinearGradient(0, 0, 0, H);
-    g.addColorStop(0, p.skyTop);
-    g.addColorStop(0.26, p.skyUpper);
-    g.addColorStop(0.48, p.skyMid);
-    g.addColorStop(0.62, p.skyLow);
-    g.addColorStop(0.75, p.skyHorizon);
-    g.addColorStop(0.88, p.sunCore);
-    g.addColorStop(1, p.skyBottom);
-    ctx.fillStyle = g;
+    const skyKey = `${H}|${p.skyTop}|${p.skyUpper}|${p.skyMid}|${p.skyLow}|${p.skyHorizon}|${p.sunCore}|${p.skyBottom}`;
+    if (!this.skyGrad || this.skyGradKey !== skyKey) {
+      const g = ctx.createLinearGradient(0, 0, 0, H);
+      g.addColorStop(0, p.skyTop);
+      g.addColorStop(0.26, p.skyUpper);
+      g.addColorStop(0.48, p.skyMid);
+      g.addColorStop(0.62, p.skyLow);
+      g.addColorStop(0.75, p.skyHorizon);
+      g.addColorStop(0.88, p.sunCore);
+      g.addColorStop(1, p.skyBottom);
+      this.skyGrad = g;
+      this.skyGradKey = skyKey;
+    }
+    ctx.fillStyle = this.skyGrad;
     ctx.fillRect(0, 0, W, H);
 
     this.drawStars(ctx, W, H, p, rc.time);
@@ -55,18 +75,30 @@ export class SkyRenderer {
     t: number,
     intensity: number,
   ): void {
+    const quantIntensity = Math.round(intensity * 256) / 256;
+    const auroraKey = `${H}|${quantIntensity}`;
+    if (this.auroraGradKey !== auroraKey || this.auroraGrads.length !== 3) {
+      this.auroraGrads = [];
+      for (let band = 0; band < 3; band++) {
+        const base = H * (0.15 + band * 0.055);
+        const amp = H * (0.034 + band * 0.016);
+        const g = ctx.createLinearGradient(0, base - amp * 3, 0, base + H * 0.11);
+        g.addColorStop(0, withAlpha("#4fd6bd", 0));
+        g.addColorStop(0.3, withAlpha("#4fd6bd", 0.11 * quantIntensity));
+        g.addColorStop(0.55, withAlpha("#89d8c8", 0.17 * quantIntensity));
+        g.addColorStop(0.7, withAlpha("#b7ffe9", 0.08 * quantIntensity));
+        g.addColorStop(1, withAlpha("#1d5354", 0));
+        this.auroraGrads.push(g);
+      }
+      this.auroraGradKey = auroraKey;
+    }
+
     ctx.save();
     ctx.globalCompositeOperation = "lighter";
     for (let band = 0; band < 3; band++) {
       const base = H * (0.15 + band * 0.055);
       const amp = H * (0.034 + band * 0.016);
-      const g = ctx.createLinearGradient(0, base - amp * 3, 0, base + H * 0.11);
-      g.addColorStop(0, withAlpha("#4fd6bd", 0));
-      g.addColorStop(0.3, withAlpha("#4fd6bd", 0.11 * intensity));
-      g.addColorStop(0.55, withAlpha("#89d8c8", 0.17 * intensity));
-      g.addColorStop(0.7, withAlpha("#b7ffe9", 0.08 * intensity));
-      g.addColorStop(1, withAlpha("#1d5354", 0));
-      ctx.fillStyle = g;
+      ctx.fillStyle = this.auroraGrads[band]!;
       ctx.beginPath();
       const step = 14;
       ctx.moveTo(-20, base);
@@ -100,24 +132,31 @@ export class SkyRenderer {
     const sunX = W * 0.73;
     const sunY = H * 0.49;
     const sunR = Math.max(30, Math.min(W, H) * 0.054);
+    const sunKey = `${W}|${H}|${p.sunGlow}|${p.sunCore}|${p.sunEdge}`;
+    if (!this.sunGlowGrad || !this.sunDiscGrad || this.sunGradKey !== sunKey) {
+      const glow = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, sunR * 7);
+      glow.addColorStop(0, withAlpha(p.sunGlow, 0.44));
+      glow.addColorStop(0.22, withAlpha(p.sunGlow, 0.2));
+      glow.addColorStop(0.56, withAlpha(p.sunGlow, 0.06));
+      glow.addColorStop(1, withAlpha(p.sunGlow, 0));
+      const disc = ctx.createLinearGradient(0, sunY - sunR, 0, sunY + sunR);
+      disc.addColorStop(0, p.sunCore);
+      disc.addColorStop(0.65, p.sunGlow);
+      disc.addColorStop(1, p.sunEdge);
+      this.sunGlowGrad = glow;
+      this.sunDiscGrad = disc;
+      this.sunGradKey = sunKey;
+    }
+
     ctx.save();
     ctx.globalAlpha = Math.min(1, p.sunAlpha);
     ctx.globalCompositeOperation = "lighter";
-    const glow = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, sunR * 7);
-    glow.addColorStop(0, withAlpha(p.sunGlow, 0.44));
-    glow.addColorStop(0.22, withAlpha(p.sunGlow, 0.2));
-    glow.addColorStop(0.56, withAlpha(p.sunGlow, 0.06));
-    glow.addColorStop(1, withAlpha(p.sunGlow, 0));
-    ctx.fillStyle = glow;
+    ctx.fillStyle = this.sunGlowGrad;
     ctx.beginPath();
     ctx.arc(sunX, sunY, sunR * 7, 0, TAU);
     ctx.fill();
     ctx.globalCompositeOperation = "source-over";
-    const disc = ctx.createLinearGradient(0, sunY - sunR, 0, sunY + sunR);
-    disc.addColorStop(0, p.sunCore);
-    disc.addColorStop(0.65, p.sunGlow);
-    disc.addColorStop(1, p.sunEdge);
-    ctx.fillStyle = disc;
+    ctx.fillStyle = this.sunDiscGrad;
     ctx.beginPath();
     ctx.arc(sunX, sunY, sunR, 0, TAU);
     ctx.fill();
@@ -133,15 +172,9 @@ export class SkyRenderer {
   ): void {
     if (p.cloudAlpha < 0.04) return;
     const drift = t * 2.3;
-    const clouds = [
-      { y: 0.17, x: 0.17, w: 0.28, h: 0.045, alpha: 0.055 },
-      { y: 0.27, x: 0.58, w: 0.33, h: 0.035, alpha: 0.08 },
-      { y: 0.39, x: 0.1, w: 0.2, h: 0.025, alpha: 0.045 },
-      { y: 0.22, x: 0.84, w: 0.24, h: 0.028, alpha: 0.05 },
-    ];
     ctx.save();
-    for (let i = 0; i < clouds.length; i++) {
-      const c = clouds[i]!;
+    for (let i = 0; i < CLOUDS.length; i++) {
+      const c = CLOUDS[i]!;
       const x = ((c.x * W + drift * (0.45 + i * 0.1)) % (W + 500)) - 250;
       const y = c.y * H;
       const w = c.w * W;

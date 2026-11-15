@@ -1,9 +1,17 @@
 import { AudioController } from "./audio/AudioController";
 import {
-  CAMERA_WIDTH_PRESETS,
+  applyCameraView,
+  cameraWidthTag,
+  clampCameraWidth,
+  computeBaseScale,
+  computeTargetCamera,
+  effectiveCameraWidth,
+  nextPresetCameraWidth,
+  stepCameraState,
+} from "./camera";
+import {
   CAMERA_WIDTH_STEP,
   CHALLENGE_WIN_BOUNTY,
-  CHUNK,
   CRASH_SETTLE_TIME,
   DEFAULT_CAMERA_WIDTH,
   FLIP_REWARD,
@@ -16,10 +24,7 @@ import {
   LOW_FUEL_RATIO,
   MAGNET_DURATION,
   MAGNET_MAX_TIME,
-  MAGNET_RADIUS,
-  MAX_CAMERA_WIDTH,
   MAX_NITRO_TIME,
-  MIN_CAMERA_WIDTH,
   NITRO_FLIP_TIME,
   NITRO_PERFECT_TIME,
   NITRO_PICKUP_TIME,
@@ -42,25 +47,22 @@ import {
   dailyVehicleFor,
   fairUpgrades,
   refreshDaily,
-  seedHex,
   settleDaily,
   utcDateKey,
 } from "./daily";
 import {
   GhostPlayback,
   GhostRecorder,
-  challengeFromHash,
-  decodeChallengeCode,
   encodeGhostCode,
   ghostProgress,
 } from "./ghost/GhostSystem";
 import type { GhostPose } from "./ghost/GhostSystem";
+import { ensureChunksAhead, updateWorldItems } from "./items";
 import {
   MissionTracker,
   missionTitle,
   settleCompletedMissions,
 } from "./missions";
-import { LATEST_NOTICE_ID, NOTICES } from "./notices";
 import {
   biomePaletteAt,
   stageInfoAt,
@@ -68,10 +70,9 @@ import {
 } from "./physics/biomes";
 import { VehiclePhysics } from "./physics/VehiclePhysics";
 import {
-  getWorldSeed,
   heightAt,
-  setWorldSeed,
   slopeAt,
+  setWorldSeed,
 } from "./physics/terrain";
 import { AtmosphereRenderer } from "./render/AtmosphereRenderer";
 import { ItemRenderer } from "./render/ItemRenderer";
@@ -100,8 +101,6 @@ import type {
   Item,
   JumpState,
   JumpTier,
-  NoticeCategory,
-  NoticeEntry,
   RenderContext,
   RunEndReason,
   RunMode,
@@ -111,13 +110,14 @@ import type {
   VehicleStats,
   ViewState,
 } from "./types";
+import { ChallengeController, type RunSummary } from "./ui/ChallengeController";
 import { GarageModal } from "./ui/GarageModal";
-import { HudController, cameraWidthTag } from "./ui/HudController";
+import { HudController } from "./ui/HudController";
 import { MissionBoard } from "./ui/MissionBoard";
+import { NoticeModal } from "./ui/NoticeModal";
 import { Overlays } from "./ui/Overlays";
-import { PosterGenerator } from "./ui/PosterGenerator";
 import { byId } from "./ui/dom";
-import { clamp, lerp, mulberry32, TAU } from "./utils";
+import { clamp, lerp, TAU } from "./utils";
 
 /* ---------- canvas / state ---------- */
 const canvas = byId<HTMLCanvasElement>("scene");
@@ -152,17 +152,32 @@ if (
 
 const missionTracker = new MissionTracker(save.missions);
 const missionBoard = new MissionBoard();
-const posterGenerator = new PosterGenerator();
-
-let runMode: RunMode = "standard";
-let loadedChallenge: GhostRecord | null = challengeFromHash(window.location.hash);
-let runConfig: RunConfig = resolveRunConfig("standard");
 
 const audio = new AudioController(save.muted, (muted) => {
   save.muted = muted;
   persistSave(save, true);
   hud.setMuted(muted);
 });
+
+const challengeController = new ChallengeController({
+  save,
+  audio,
+  hud,
+  overlays,
+});
+
+const noticeModal = new NoticeModal({
+  save,
+  audio,
+  overlays,
+  canOpen: () =>
+    state === "intro" &&
+    !garage.isOpen &&
+    overlays.challenge.classList.contains("is-hidden"),
+});
+
+let runMode: RunMode = "standard";
+let runConfig: RunConfig = resolveRunConfig("standard");
 
 const physics = new VehiclePhysics(VEHICLES[save.selectedVehicle]);
 const car = physics.car;
@@ -206,26 +221,6 @@ interface RunConfig {
   modeLabel: string;
 }
 
-interface RunSummary {
-  mode: RunMode;
-  modeLabel: string;
-  vehicleId: VehicleId;
-  distance: number;
-  record: boolean;
-  dailyRecord: boolean;
-  challengeWin: boolean;
-  rivalDistance: number;
-  bounty: number;
-  flips: number;
-  bestCombo: number;
-  highestStunt: string;
-  runCoins: number;
-  seed: number;
-  dateKey: string;
-  stageCount: number;
-  challengeCode: string;
-}
-
 const ghostRecorder = new GhostRecorder();
 let activeGhost: { record: GhostRecord; kind: GhostKind } | null = null;
 let ghostPlayback: GhostPlayback | null = null;
@@ -233,8 +228,6 @@ let ghostPose: GhostPose | null = null;
 let ghostDelta = 0;
 let ghostOvertaken = false;
 let runTime = 0;
-let lastSummary: RunSummary | null = null;
-let posterReady = false;
 
 let runFlips = 0;
 let perfectLandings = 0;
@@ -307,14 +300,16 @@ function clearPressed(): void {
 }
 
 /* ---------- camera ---------- */
-function computeBaseScale(width: number, cameraWidth: number): number {
-  const targetWidth = clamp(
-    Math.round(cameraWidth),
-    MIN_CAMERA_WIDTH,
-    MAX_CAMERA_WIDTH,
+function targetCamera(): CameraState {
+  return computeTargetCamera(
+    state,
+    W,
+    H,
+    camera.scale,
+    baseScale,
+    renderCar,
+    jump,
   );
-  const safeWidth = Number.isFinite(width) && width > 0 ? width : 1;
-  return safeWidth / targetWidth;
 }
 
 function resize(): void {
@@ -326,22 +321,21 @@ function resize(): void {
   canvas.style.width = `${W}px`;
   canvas.style.height = `${H}px`;
   baseScale = computeBaseScale(W, save.cameraWidth);
-  if (state === "intro") camera.scale = baseScale * 1.015;
+  if (state === "intro") camera.scale = baseScale;
 }
 
 function setCameraWidth(
   nextWidth: number,
   options: { announce?: boolean; sound?: boolean } = {},
 ): void {
-  const clamped = clamp(
-    Math.round(nextWidth),
-    MIN_CAMERA_WIDTH,
-    MAX_CAMERA_WIDTH,
-  );
+  const clamped = clampCameraWidth(nextWidth);
   const changed = clamped !== save.cameraWidth;
   save.cameraWidth = clamped;
   baseScale = computeBaseScale(W, clamped);
-  hud.setCameraWidth(clamped);
+  if (state !== "playing") {
+    camera.scale = targetCamera().scale;
+  }
+  hud.setCameraWidth(clamped, effectiveCameraWidth(W, camera.scale, clamped));
   persistSave(save);
   if (options.sound && changed) {
     audio.ensure();
@@ -356,11 +350,7 @@ function setCameraWidth(
 }
 
 function stepCameraWidth(delta: number): void {
-  const next = clamp(
-    save.cameraWidth + delta,
-    MIN_CAMERA_WIDTH,
-    MAX_CAMERA_WIDTH,
-  );
+  const next = clampCameraWidth(save.cameraWidth + delta);
   if (next === save.cameraWidth) {
     audio.ensure();
     audio.deny();
@@ -374,41 +364,14 @@ function stepCameraWidth(delta: number): void {
 }
 
 function cycleCameraPreset(): void {
-  const current = save.cameraWidth;
-  let nextIndex = CAMERA_WIDTH_PRESETS.findIndex((preset) => preset > current);
-  if (nextIndex < 0) nextIndex = 0;
-  const next = CAMERA_WIDTH_PRESETS[nextIndex]!;
-  setCameraWidth(next, { announce: true, sound: true });
-}
-
-function targetCamera(): CameraState {
-  const visW = W / camera.scale;
-  const visH = H / camera.scale;
-  if (state === "intro") {
-    return {
-      x: renderCar.x - visW * 0.18,
-      y: renderCar.y - visH * 0.15,
-      scale: baseScale * 1.015,
-    };
-  }
-  const look = clamp(renderCar.vx * 0.4, -visW * 0.17, visW * 0.22);
-  const speedZoom = 1 - clamp(Math.abs(renderCar.vx) / 92, 0, 0.1);
-  const nitroZoom =
-    jump.nitroTime > 0 && !renderCar.crashed ? 0.94 : 1;
-  return {
-    x: renderCar.x + look,
-    y: renderCar.y - visH * 0.13,
-    scale: baseScale * speedZoom * nitroZoom,
-  };
+  setCameraWidth(nextPresetCameraWidth(save.cameraWidth), {
+    announce: true,
+    sound: true,
+  });
 }
 
 function updateCamera(dt: number): void {
-  const target = targetCamera();
-  const posK = 1 - Math.exp(-dt * (state === "intro" ? 1.25 : 4.4));
-  const scaleK = 1 - Math.exp(-dt * 2.3);
-  camera.x = lerp(camera.x, target.x, posK);
-  camera.y = lerp(camera.y, target.y, posK);
-  camera.scale = lerp(camera.scale, target.scale, scaleK);
+  stepCameraState(camera, targetCamera(), state, dt);
   shake *= Math.exp(-dt * 6.5);
   if (shake < 0.001) shake = 0;
 }
@@ -421,9 +384,7 @@ function snapCamera(): void {
 }
 
 function makeView(time: number): void {
-  view.x = camera.x + (Math.sin(time * 137) * shake * 6.5) / camera.scale;
-  view.y = camera.y + (Math.cos(time * 107) * shake * 4.5) / camera.scale;
-  view.scale = camera.scale;
+  applyCameraView(view, camera, shake, time);
 }
 
 function addShake(value: number): void {
@@ -471,93 +432,6 @@ function syncRenderCar(): void {
   renderCar.wheelSpin = car.wheelSpin;
   renderCar.contact = car.contact;
   renderCar.wheelWorld = car.wheelWorld;
-}
-
-/* ---------- items ---------- */
-function generateChunk(chunk: number): void {
-  const rng = mulberry32(
-    (((chunk + 7) * 0x9e3779b1) ^ getWorldSeed()) >>> 0,
-  );
-  const baseX = START_X + chunk * CHUNK;
-  let coinStart = Number.POSITIVE_INFINITY;
-  let fuelX = Number.POSITIVE_INFINITY;
-
-  if (chunk % 2 === 1) {
-    const count = 3 + Math.floor(rng() * 3);
-    const start = baseX + 7 + rng() * 15;
-    coinStart = start;
-    const lift = 1.08 + rng() * 0.5;
-    for (let i = 0; i < count; i++) {
-      const x = start + i * 3.15;
-      const arc = Math.sin((i / Math.max(1, count - 1)) * Math.PI) * 1.55;
-      items.push({
-        type: "coin",
-        x,
-        y: heightAt(x) - lift - arc,
-        vx: 0,
-        vy: 0,
-        phase: rng() * TAU,
-        alive: true,
-      });
-    }
-  }
-
-  if (chunk === 1 || (chunk > 3 && chunk % 4 === 1)) {
-    const x = baseX + 13 + rng() * 17;
-    fuelX = x;
-    items.push({
-      type: "fuel",
-      x,
-      y: heightAt(x) - 1.15,
-      vx: 0,
-      vy: 0,
-      phase: rng() * TAU,
-      alive: true,
-    });
-  }
-
-  // Turbo cylinder: from the 2nd chunk onward, in the climb-in section.
-  if (chunk >= 1 && rng() < 0.35) {
-    const x = baseX + 4 + rng() * 11;
-    if (Math.abs(x - fuelX) > 5.5) {
-      items.push({
-        type: "nitro",
-        x,
-        y: heightAt(x) - 1.2,
-        vx: 0,
-        vy: 0,
-        phase: rng() * TAU,
-        alive: true,
-      });
-    }
-  }
-
-  // Magnet beacon: just ahead of a coin ribbon, so it charges before the arc.
-  if (Number.isFinite(coinStart) && rng() < 0.25) {
-    const x = Math.max(baseX + 3, coinStart - 8 - rng() * 4);
-    if (Math.abs(x - fuelX) > 5.5) {
-      items.push({
-        type: "magnet",
-        x,
-        y: heightAt(x) - 1.55,
-        vx: 0,
-        vy: 0,
-        phase: rng() * TAU,
-        alive: true,
-      });
-    }
-  }
-}
-
-function ensureChunksAhead(): void {
-  const target = car.x + 310;
-  while (START_X + chunkCursor * CHUNK < target) {
-    generateChunk(chunkCursor);
-    chunkCursor++;
-  }
-  if (items.length > 500) {
-    items = items.filter((item) => item.alive && item.x > car.x - 55);
-  }
 }
 
 /* ---------- effects ---------- */
@@ -829,53 +703,14 @@ function collectItem(item: Item): void {
   hud.showToast("磁铁信标", `引力场展开 · ${MAGNET_DURATION.toFixed(0)}s`);
 }
 
-function pickupRadius(type: Item["type"]): number {
-  if (type === "fuel") return 1.95;
-  if (type === "coin") return 1.55;
-  return 1.9;
-}
-
 function updateItems(dt: number): void {
-  const magnetActive = jump.magnetTime > 0 && !car.crashed;
-  let pruned = false;
-  for (const item of items) {
-    if (!item.alive) {
-      pruned = true;
-      continue;
-    }
-    if (item.x < car.x - 60) {
-      item.alive = false;
-      pruned = true;
-      continue;
-    }
-    if (!car.crashed) {
-      if (magnetActive && item.type === "coin") {
-        const dx = car.x - item.x;
-        const dy = car.y - item.y;
-        const dist = Math.hypot(dx, dy);
-        if (dist < MAGNET_RADIUS && dist > 0.001) {
-          const pull = 30 + (MAGNET_RADIUS - dist) * 8;
-          const k = 1 - Math.exp(-dt * 10);
-          item.vx += ((dx / dist) * pull - item.vx) * k;
-          item.vy += ((dy / dist) * pull - item.vy) * k;
-        }
-      }
-      if (item.vx !== 0 || item.vy !== 0) {
-        item.x += item.vx * dt;
-        item.y += item.vy * dt;
-        const damp = Math.exp(-dt * 1.8);
-        item.vx *= damp;
-        item.vy *= damp;
-      }
-      const dx = item.x - car.x;
-      const dy = item.y - car.y;
-      const radius = pickupRadius(item.type);
-      if (dx * dx + dy * dy < radius * radius) collectItem(item);
-    }
-  }
-  if (pruned && Math.random() < 0.06) {
-    items = items.filter((item) => item.alive);
-  }
+  updateWorldItems(
+    items,
+    car,
+    jump.magnetTime > 0 && !car.crashed,
+    dt,
+    collectItem,
+  );
 }
 
 /* ---------- run lifecycle ---------- */
@@ -910,8 +745,8 @@ function resolveRunConfig(mode: RunMode): RunConfig {
       modeLabel: `每日试炼 · #${config.number} ${config.name}`,
     };
   }
-  if (mode === "challenge" && loadedChallenge) {
-    const ghost = loadedChallenge;
+  if (mode === "challenge" && challengeController.loadedChallenge) {
+    const ghost = challengeController.loadedChallenge;
     const daily = ghost.mode === "daily";
     const vehicleId = daily
       ? dailyVehicleFor(ghost.seed)
@@ -1023,8 +858,7 @@ function resetRun(): void {
 
   items = [];
   particles.clear();
-  chunkCursor = 0;
-  ensureChunksAhead();
+  chunkCursor = ensureChunksAhead(car.x, 0, items);
   snapVisualCar();
   hud.setModeChip(
     runMode === "standard" ? "" : runConfig.modeLabel,
@@ -1052,10 +886,13 @@ function snapshot(): HudSnapshot {
     nitro: jump.nitroTime,
     magnet: jump.magnetTime,
     combo: jump.perfectCombo,
+    cameraWidth: effectiveCameraWidth(W, camera.scale, save.cameraWidth),
+    baseCameraWidth: save.cameraWidth,
   };
 }
 
 function startRun(mode: RunMode = runMode): void {
+  const loadedChallenge = challengeController.loadedChallenge;
   if (mode === "challenge" && !loadedChallenge) {
     audio.deny();
     hud.showToast("尚无战书", "先在首页载入好友的挑战码");
@@ -1068,7 +905,7 @@ function startRun(mode: RunMode = runMode): void {
     mode === "daily" &&
     previousDailyDate !== "" &&
     previousDailyDate !== save.dailyDate;
-  if (dailyRolledOnStart) updateModeUi();
+  if (dailyRolledOnStart) challengeController.updateModeUi();
   if (garage.isOpen) garage.close();
   audio.ensure();
   overlays.hideAll();
@@ -1113,6 +950,7 @@ function pauseGame(): void {
   state = "paused";
   clearPressed();
   hud.hideToast();
+  hud.update(snapshot(), true);
   hud.setMode("paused");
   missionBoard.sync(save.missions, true);
   overlays.showPause({
@@ -1187,7 +1025,7 @@ function endRun(reason: RunEndReason): void {
 
   const resultBest = mode === "daily" ? save.dailyBest : save.best;
   const bountyTotal = missionEarnings + endBounty;
-  lastSummary = {
+  const summary: RunSummary = {
     mode,
     modeLabel: runConfig.modeLabel || "STANDARD RUN",
     vehicleId: runConfig.vehicleId,
@@ -1212,9 +1050,10 @@ function endRun(reason: RunEndReason): void {
         ? encodeGhostCode(finishedGhost)
         : "",
   };
+  challengeController.setLastSummary(summary);
 
   // Keep a just-settled daily result intact across UTC midnight through persistence
-  // and the summary screen; the next "again" run or home transition rolls over.
+  // and the summary screen; the next "again" run, home transition or reload rolls over.
   if (mode === "standard") runConfig = resolveRunConfig("standard");
   const dailyRolledOver =
     mode === "daily" &&
@@ -1256,7 +1095,7 @@ function goHome(): void {
     persistSave(save, true);
   }
   runConfig = resolveRunConfig("standard");
-  lastSummary = null;
+  challengeController.setLastSummary(null);
   clearPressed();
   overlays.hidePause();
   overlays.hideResult();
@@ -1268,7 +1107,7 @@ function goHome(): void {
   hud.updateMeta(save.best, save.coins);
   hud.update(snapshot(), true);
   overlays.showIntro();
-  updateModeUi();
+  challengeController.updateModeUi();
   resetRun();
   snapCamera();
   missionBoard.sync(save.missions, true);
@@ -1561,7 +1400,7 @@ function simulate(dt: number): void {
   updateGhost();
   updateMissions(dt);
   updateItems(dt);
-  ensureChunksAhead();
+  chunkCursor = ensureChunksAhead(car.x, chunkCursor, items);
   particles.update(dt);
 
   const fuelRatio = fuel / stats.fuelCapacity;
@@ -1696,7 +1535,7 @@ const garage = new GarageModal(save, {
       runConfig = resolveRunConfig("standard");
       resetRun();
       snapCamera();
-      updateModeUi();
+      challengeController.updateModeUi();
     }
   },
   onClose: () => {
@@ -1710,177 +1549,6 @@ function openGarage(): void {
   audio.ensure();
   garage.open();
 }
-
-/* ---------- pit bulletin ---------- */
-const noticeBtn = byId<HTMLButtonElement>("noticeBtn");
-const noticeDot = byId("noticeDot");
-const noticeVersion = byId("noticeVersion");
-const noticeList = byId("noticeList");
-const noticeTabUpdate = byId<HTMLButtonElement>("noticeTabUpdate");
-const noticeTabBulletin = byId<HTMLButtonElement>("noticeTabBulletin");
-const noticeOkBtn = byId<HTMLButtonElement>("noticeOkBtn");
-const noticeCloseBtn = byId<HTMLButtonElement>("noticeCloseBtn");
-let noticeCategory: NoticeCategory = "update";
-
-function updateNoticeBadge(): void {
-  const unread = save.lastSeenNoticeId !== LATEST_NOTICE_ID;
-  noticeDot.hidden = !unread;
-  noticeBtn.classList.toggle("has-unread", unread);
-  noticeBtn.setAttribute(
-    "aria-label",
-    unread ? "山脊公报（有未读更新）" : "山脊公报",
-  );
-  // The entry button advertises the newest tagged release, even when the
-  // latest bulletin itself carries no version.
-  const latestVersioned = NOTICES.find((entry) => entry.version);
-  if (latestVersioned?.version) {
-    noticeVersion.textContent = latestVersioned.version.replace(/\.0$/, "");
-  }
-}
-
-function createNoticeCard(entry: NoticeEntry): HTMLElement {
-  const card = document.createElement("article");
-  card.className = "notice-card";
-  card.dataset.noticeId = entry.id;
-  if (entry.pinned) card.classList.add("is-pinned");
-
-  const head = document.createElement("header");
-  head.className = "notice-card-head";
-
-  const titleWrap = document.createElement("div");
-  titleWrap.className = "notice-card-title";
-  if (entry.pinned) {
-    const pin = document.createElement("span");
-    pin.className = "notice-pin";
-    pin.textContent = "PINNED";
-    titleWrap.appendChild(pin);
-  }
-  const title = document.createElement("h3");
-  title.textContent = entry.title;
-  titleWrap.appendChild(title);
-  head.appendChild(titleWrap);
-
-  if (entry.version) {
-    const version = document.createElement("span");
-    version.className = "notice-version";
-    version.textContent = entry.version;
-    head.appendChild(version);
-  }
-  card.appendChild(head);
-
-  const date = document.createElement("p");
-  date.className = "notice-date";
-  date.textContent = entry.date;
-  card.appendChild(date);
-
-  const summary = document.createElement("p");
-  summary.className = "notice-summary";
-  summary.textContent = entry.summary;
-  card.appendChild(summary);
-
-  const items = document.createElement("ul");
-  items.className = "notice-items";
-  for (const item of entry.items) {
-    const row = document.createElement("li");
-    row.className = "notice-item";
-
-    const tag = document.createElement("span");
-    tag.className = "notice-tag";
-    tag.dataset.tone = item.tone;
-    tag.textContent = item.tag;
-
-    const text = document.createElement("span");
-    text.className = "notice-item-text";
-    text.textContent = item.text;
-
-    row.append(tag, text);
-    items.appendChild(row);
-  }
-  card.appendChild(items);
-
-  return card;
-}
-
-function renderNoticeList(category: NoticeCategory): void {
-  const entries: NoticeEntry[] = [
-    ...NOTICES.filter((entry) => entry.category === category && entry.pinned),
-    ...NOTICES.filter((entry) => entry.category === category && !entry.pinned),
-  ];
-  noticeList.replaceChildren();
-  if (entries.length === 0) {
-    const empty = document.createElement("p");
-    empty.className = "notice-empty";
-    empty.textContent = "这一栏还没有新的公报。";
-    noticeList.appendChild(empty);
-    return;
-  }
-  const fragment = document.createDocumentFragment();
-  for (const entry of entries) fragment.appendChild(createNoticeCard(entry));
-  noticeList.appendChild(fragment);
-}
-
-function setNoticeTab(category: NoticeCategory, focusTab = false): void {
-  noticeCategory = category;
-  const isUpdate = category === "update";
-  noticeTabUpdate.classList.toggle("is-active", isUpdate);
-  noticeTabBulletin.classList.toggle("is-active", !isUpdate);
-  noticeTabUpdate.setAttribute("aria-selected", String(isUpdate));
-  noticeTabBulletin.setAttribute("aria-selected", String(!isUpdate));
-  noticeList.setAttribute(
-    "aria-labelledby",
-    isUpdate ? "noticeTabUpdate" : "noticeTabBulletin",
-  );
-  renderNoticeList(category);
-  noticeList.scrollTop = 0;
-  if (focusTab) (isUpdate ? noticeTabUpdate : noticeTabBulletin).focus();
-}
-
-function switchNoticeTab(category: NoticeCategory, focusTab = false): void {
-  if (category === noticeCategory) {
-    if (focusTab) (category === "update" ? noticeTabUpdate : noticeTabBulletin).focus();
-    return;
-  }
-  audio.ensure();
-  audio.select();
-  setNoticeTab(category, focusTab);
-}
-
-function openNoticeModal(initialTab?: NoticeCategory): void {
-  if (
-    state !== "intro" ||
-    garage.isOpen ||
-    !overlays.challenge.classList.contains("is-hidden")
-  ) {
-    return;
-  }
-  audio.ensure();
-  const unread = save.lastSeenNoticeId !== LATEST_NOTICE_ID;
-  const targetTab =
-    initialTab ?? (unread ? (NOTICES[0]?.category ?? "update") : noticeCategory);
-  setNoticeTab(targetTab);
-  save.lastSeenNoticeId = LATEST_NOTICE_ID;
-  persistSave(save, true);
-  updateNoticeBadge();
-  audio.select();
-  overlays.showNotice(noticeOkBtn);
-}
-
-function handleNoticeTabKey(event: KeyboardEvent): void {
-  if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-  event.preventDefault();
-  switchNoticeTab(noticeCategory === "update" ? "bulletin" : "update", true);
-}
-
-noticeBtn.addEventListener("click", () => openNoticeModal());
-noticeTabUpdate.addEventListener("click", () => switchNoticeTab("update"));
-noticeTabBulletin.addEventListener("click", () => switchNoticeTab("bulletin"));
-noticeTabUpdate.addEventListener("keydown", handleNoticeTabKey);
-noticeTabBulletin.addEventListener("keydown", handleNoticeTabKey);
-noticeOkBtn.addEventListener("click", () => overlays.hideNotice());
-noticeCloseBtn.addEventListener("click", () => overlays.hideNotice());
-overlays.notice.addEventListener("click", (event) => {
-  if (event.target === overlays.notice) overlays.hideNotice();
-});
 
 /* ---------- events ---------- */
 function isFormControl(target: EventTarget | null): boolean {
@@ -1956,7 +1624,7 @@ function handleKeyDown(event: KeyboardEvent): void {
 
   if (code === "KeyN" && state === "intro") {
     event.preventDefault();
-    openNoticeModal();
+    noticeModal.open();
     return;
   }
 
@@ -2068,222 +1736,6 @@ function bindPedal(button: HTMLElement, name: "gas" | "brake"): void {
   button.addEventListener("contextmenu", (event) => event.preventDefault());
 }
 
-/* ---------- daily / challenge / share UI ---------- */
-const dailyBtnMeta = byId("dailyBtnMeta");
-const challengeBtnMeta = byId("challengeBtnMeta");
-const challengeBanner = byId("challengeBanner");
-const challengeBannerTarget = byId("challengeBannerTarget");
-const challengeBannerMeta = byId("challengeBannerMeta");
-const challengeInput = byId<HTMLTextAreaElement>("challengeInput");
-const challengeStatus = byId("challengeStatus");
-
-function updateModeUi(): void {
-  const today = utcDateKey();
-  if (save.dailyDate !== today) {
-    if (refreshDaily(save, today) && !getSaveReport().preserveRawPrimary) {
-      persistSave(save, true);
-    }
-  }
-  const seed = dailySeedFor(save.dailyDate || today);
-  const vehicle = VEHICLES[dailyVehicleFor(seed)];
-  const bestLine = save.dailyBest > 0 ? ` · 今日最佳 ${save.dailyBest}m` : "";
-  dailyBtnMeta.textContent = `${save.dailyDate || today} · #${vehicle.number} ${vehicle.name}${bestLine}`;
-
-  if (loadedChallenge) {
-    const daily = loadedChallenge.mode === "daily";
-    const ruleVehicle = daily
-      ? dailyVehicleFor(loadedChallenge.seed)
-      : loadedChallenge.vehicleId;
-    const config = VEHICLES[ruleVehicle];
-    challengeBanner.hidden = false;
-    challengeBannerTarget.textContent = `目标 ${loadedChallenge.distance}m`;
-    challengeBannerMeta.textContent = daily
-      ? `每日战书 · 官方同车 #${config.number} ${config.name} · Lv.5 公平 · SEED ${seedHex(loadedChallenge.seed)}`
-      : `常规战书 · 同地形自备车库 · 对手 #${config.number} ${config.name} · SEED ${seedHex(loadedChallenge.seed)}`;
-    challengeBtnMeta.textContent = `已载入${daily ? "每日" : "常规"}战书 · 目标 ${loadedChallenge.distance}m`;
-  } else {
-    challengeBanner.hidden = true;
-    challengeBtnMeta.textContent = "粘贴挑战码 / 打开好友战书";
-  }
-}
-
-function challengeLink(code: string): string {
-  const base = location.href.split("#")[0] ?? location.href;
-  return `${base}#challenge=${code}`;
-}
-
-function acceptChallenge(record: GhostRecord): void {
-  loadedChallenge = record;
-  try {
-    const code = encodeGhostCode(record);
-    history.replaceState(null, "", challengeLink(code));
-  } catch (_) {
-    /* file:// or restricted history: the banner still works this session */
-  }
-  updateModeUi();
-}
-
-function openChallengeModal(): void {
-  audio.ensure();
-  challengeInput.value = loadedChallenge
-    ? encodeGhostCode(loadedChallenge)
-    : "";
-  challengeStatus.dataset.tone = "";
-  challengeStatus.textContent = loadedChallenge
-    ? `当前已载入战书 · 目标 ${loadedChallenge.distance}m。粘贴新代码可替换。`
-    : "";
-  overlays.showChallenge();
-}
-
-function loadChallengeFromInput(): void {
-  const record = decodeChallengeCode(challengeInput.value);
-  if (!record) {
-    audio.deny();
-    challengeStatus.dataset.tone = "error";
-    challengeStatus.textContent =
-      "挑战码损坏或格式不正确。请确认以 RR2. 开头，并完整复制。";
-    return;
-  }
-  acceptChallenge(record);
-  challengeStatus.dataset.tone = "ok";
-  challengeStatus.textContent = `战书有效 · 目标 ${record.distance}m，已载入首页。`;
-  audio.select();
-  overlays.hideChallenge();
-  hud.showToast("战书已加载", `目标 ${record.distance}m · 点击应战发车`);
-}
-
-function clearLoadedChallenge(): void {
-  loadedChallenge = null;
-  try {
-    const base = location.href.split("#")[0] ?? location.href;
-    history.replaceState(null, "", base);
-  } catch (_) {
-    /* ignore restricted history */
-  }
-  updateModeUi();
-  hud.showToast("战书已移除", "当前将按常规赛发车");
-}
-
-function currentShareCode(): string | null {
-  if (lastSummary) {
-    return lastSummary.distance >= 1 && lastSummary.challengeCode
-      ? lastSummary.challengeCode
-      : null;
-  }
-  if (loadedChallenge && loadedChallenge.distance >= 1) {
-    return encodeGhostCode(loadedChallenge);
-  }
-  return null;
-}
-
-function fallbackCopy(text: string): boolean {
-  const area = document.createElement("textarea");
-  area.value = text;
-  area.setAttribute("readonly", "");
-  area.style.position = "fixed";
-  area.style.top = "-9999px";
-  area.style.opacity = "0";
-  area.style.userSelect = "text";
-  area.style.webkitUserSelect = "text";
-  document.body.appendChild(area);
-  area.focus();
-  area.select();
-  let copied = false;
-  try {
-    copied = document.execCommand("copy");
-  } catch (_) {
-    copied = false;
-  }
-  area.remove();
-  return copied;
-}
-
-async function copyText(
-  text: string,
-  main: string,
-  detail: string,
-): Promise<void> {
-  let copied = false;
-  try {
-    if (navigator.clipboard && window.isSecureContext) {
-      await navigator.clipboard.writeText(text);
-      copied = true;
-    }
-  } catch (_) {
-    copied = false;
-  }
-  if (!copied) copied = fallbackCopy(text);
-  if (copied) hud.showToast(main, detail);
-  else hud.showToast("复制失败", "请手动选中挑战码复制");
-}
-
-async function copyChallengeLink(): Promise<void> {
-  const code = currentShareCode();
-  if (!code) {
-    hud.showToast("暂无可分享战书", "先完成一程，再复制挑战链接");
-    return;
-  }
-  const target = lastSummary?.distance ?? loadedChallenge?.distance ?? 0;
-  await copyText(
-    challengeLink(code),
-    "战书链接已复制",
-    `目标 ${target}m · 打开链接即可同屏竞速`,
-  );
-}
-
-async function openPoster(): Promise<void> {
-  if (!lastSummary) {
-    hud.showToast("尚无战报", "完成一程后再生成战术战报");
-    return;
-  }
-  const summary = lastSummary;
-  posterReady = false;
-  overlays.showPoster();
-  try {
-    await posterGenerator.render({
-      vehicleId: summary.vehicleId,
-      distance: summary.distance,
-      mode: summary.mode,
-      modeLabel: summary.modeLabel,
-      seed: summary.seed,
-      dateKey: summary.dateKey,
-      record: summary.record,
-      dailyRecord: summary.dailyRecord,
-      challengeWin: summary.challengeWin,
-      runCoins: summary.runCoins,
-      flips: summary.flips,
-      bestCombo: summary.bestCombo,
-      bounty: summary.bounty,
-      stageCount: summary.stageCount,
-      challengeCode: summary.challengeCode,
-      generatedLabel: utcDateKey(),
-    });
-    posterReady = true;
-  } catch (_) {
-    posterReady = false;
-    overlays.hidePoster();
-    hud.showToast("战报生成失败", "请关闭弹窗后重试");
-  }
-}
-
-function downloadPoster(): void {
-  if (!lastSummary) return;
-  if (!posterReady) {
-    hud.showToast("战报尚未生成", "请稍候再下载");
-    return;
-  }
-  try {
-    posterGenerator.download(lastSummary.distance);
-    hud.showToast(
-      "PNG 已生成",
-      `ridge-run-${lastSummary.distance}m.png`,
-    );
-  } catch (_) {
-    posterReady = false;
-    hud.showToast("导出失败", "请重新生成战报后再试");
-  }
-}
-
 /* ---------- boot ---------- */
 let lastStorageToastAt = 0;
 
@@ -2304,7 +1756,10 @@ function boot(): void {
 
   document.body.classList.toggle("is-muted", save.muted);
   hud.setMuted(save.muted);
-  hud.setCameraWidth(save.cameraWidth);
+  hud.setCameraWidth(
+    save.cameraWidth,
+    effectiveCameraWidth(W, camera.scale, save.cameraWidth),
+  );
   hud.updateMeta(save.best, save.coins);
 
   overlays.hidePause();
@@ -2313,8 +1768,8 @@ function boot(): void {
   overlays.hidePoster();
   overlays.hideNotice();
   overlays.showIntro();
-  updateNoticeBadge();
-  updateModeUi();
+  noticeModal.updateBadge();
+  challengeController.updateModeUi();
 
   state = "intro";
   hud.setMode("intro");
@@ -2362,59 +1817,48 @@ window.addEventListener("keyup", handleKeyUp);
 window.addEventListener("blur", clearPressed);
 window.addEventListener("beforeunload", () => flushSave(save));
 
-challengeInput.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && !event.shiftKey) {
-    event.preventDefault();
-    loadChallengeFromInput();
-  }
-});
-
-window.addEventListener("hashchange", () => {
-  if (!location.hash) {
-    if (loadedChallenge) {
-      loadedChallenge = null;
-      updateModeUi();
-    }
-    return;
-  }
-  const record = challengeFromHash(location.hash);
-  if (record) {
-    loadedChallenge = record;
-    updateModeUi();
-    return;
-  }
-  if (location.hash.startsWith("#challenge=")) {
-    loadedChallenge = null;
-    updateModeUi();
-  }
-});
+window.addEventListener("hashchange", () => challengeController.handleHashChange());
 
 document.addEventListener("visibilitychange", () => {
   if (document.hidden && state === "playing") pauseGame();
-  else if (!document.hidden && state === "intro") updateModeUi();
+  else if (!document.hidden && state === "intro") challengeController.updateModeUi();
 });
 window.addEventListener("focus", () => {
-  if (state === "intro") updateModeUi();
+  if (state === "intro") challengeController.updateModeUi();
 });
 window.setInterval(() => {
-  if (state === "intro") updateModeUi();
+  if (state === "intro") challengeController.updateModeUi();
 }, 30_000);
 
 byId("startBtn").addEventListener("click", () => startRun("standard"));
 byId("dailyBtn").addEventListener("click", () => startRun("daily"));
-byId("challengeBtn").addEventListener("click", openChallengeModal);
+byId("challengeBtn").addEventListener("click", () =>
+  challengeController.openChallengeModal(),
+);
 byId("challengeStartBtn").addEventListener("click", () =>
   startRun("challenge"),
 );
-byId("challengeClearBtn").addEventListener("click", clearLoadedChallenge);
-byId("challengeLoadBtn").addEventListener("click", loadChallengeFromInput);
+byId("challengeClearBtn").addEventListener("click", () =>
+  challengeController.clearLoadedChallenge(),
+);
+byId("challengeLoadBtn").addEventListener("click", () =>
+  challengeController.loadFromInput(),
+);
 byId("challengeCloseBtn").addEventListener("click", () =>
   overlays.hideChallenge(),
 );
-byId("copyChallengeBtn").addEventListener("click", copyChallengeLink);
-byId("posterBtn").addEventListener("click", () => void openPoster());
-byId("posterDownloadBtn").addEventListener("click", downloadPoster);
-byId("posterCopyBtn").addEventListener("click", copyChallengeLink);
+byId("copyChallengeBtn").addEventListener("click", () =>
+  void challengeController.copyChallengeLink(),
+);
+byId("posterBtn").addEventListener("click", () =>
+  void challengeController.openPoster(),
+);
+byId("posterDownloadBtn").addEventListener("click", () =>
+  challengeController.downloadPoster(),
+);
+byId("posterCopyBtn").addEventListener("click", () =>
+  void challengeController.copyChallengeLink(),
+);
 byId("posterCloseBtn").addEventListener("click", () =>
   overlays.hidePoster(),
 );

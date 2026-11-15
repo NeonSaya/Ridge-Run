@@ -13,6 +13,173 @@ const PAPER = "#f4e8d2";
 const AMBER = "#f0b15e";
 const SIGNAL = "#eb633a";
 const ICE = "#89d8c8";
+const PNG_SIGNATURE = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+export const POSTER_TEXT_KEYWORD = "ridge-run-challenge";
+
+const CRC32_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let k = 0; k < 8; k++) {
+      c = (c & 1) !== 0 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    }
+    table[i] = c >>> 0;
+  }
+  return table;
+})();
+
+function crc32(bytes: Uint8Array, start = 0, end = bytes.length): number {
+  let crc = 0xffffffff;
+  for (let i = start; i < end; i++) {
+    crc = CRC32_TABLE[(crc ^ bytes[i]!) & 0xff]! ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function writeUint32BE(target: Uint8Array, offset: number, value: number): void {
+  target[offset] = (value >>> 24) & 0xff;
+  target[offset + 1] = (value >>> 16) & 0xff;
+  target[offset + 2] = (value >>> 8) & 0xff;
+  target[offset + 3] = value & 0xff;
+}
+
+function readUint32BE(source: Uint8Array, offset: number): number {
+  return (
+    ((source[offset]! << 24) |
+      (source[offset + 1]! << 16) |
+      (source[offset + 2]! << 8) |
+      source[offset + 3]!) >>>
+    0
+  );
+}
+
+function hasPngSignature(bytes: Uint8Array): boolean {
+  if (bytes.length < PNG_SIGNATURE.length) return false;
+  for (let i = 0; i < PNG_SIGNATURE.length; i++) {
+    if (bytes[i] !== PNG_SIGNATURE[i]) return false;
+  }
+  return true;
+}
+
+/**
+ * Embeds the full `RR2.` challenge code inside a PNG `tEXt` metadata chunk
+ * right before `IEND`, keeping the image valid for all viewers while allowing
+ * direct challenge import from a saved tactical poster PNG.
+ */
+export function embedChallengeInPng(
+  pngBytes: Uint8Array,
+  challengeCode: string,
+): Uint8Array {
+  const trimmed = challengeCode.trim();
+  if (!trimmed || !hasPngSignature(pngBytes)) return pngBytes;
+
+  let iendOffset = -1;
+  let offset = 8;
+  while (offset + 12 <= pngBytes.length) {
+    const length = readUint32BE(pngBytes, offset);
+    const next = offset + 12 + length;
+    if (next > pngBytes.length) break;
+    if (
+      pngBytes[offset + 4] === 0x49 && // I
+      pngBytes[offset + 5] === 0x45 && // E
+      pngBytes[offset + 6] === 0x4e && // N
+      pngBytes[offset + 7] === 0x44 // D
+    ) {
+      iendOffset = offset;
+      break;
+    }
+    offset = next;
+  }
+  if (iendOffset < 0) return pngBytes;
+
+  const encoder = new TextEncoder();
+  const keyBytes = encoder.encode(POSTER_TEXT_KEYWORD);
+  const valBytes = encoder.encode(trimmed);
+  const dataLen = keyBytes.length + 1 + valBytes.length;
+  const chunkLen = 12 + dataLen;
+  const chunk = new Uint8Array(chunkLen);
+
+  writeUint32BE(chunk, 0, dataLen);
+  chunk[4] = 0x74; // t
+  chunk[5] = 0x45; // E
+  chunk[6] = 0x58; // X
+  chunk[7] = 0x74; // t
+  chunk.set(keyBytes, 8);
+  chunk[8 + keyBytes.length] = 0;
+  chunk.set(valBytes, 8 + keyBytes.length + 1);
+  const crc = crc32(chunk, 4, 8 + dataLen);
+  writeUint32BE(chunk, 8 + dataLen, crc);
+
+  const out = new Uint8Array(pngBytes.length + chunkLen);
+  out.set(pngBytes.subarray(0, iendOffset), 0);
+  out.set(chunk, iendOffset);
+  out.set(pngBytes.subarray(iendOffset), iendOffset + chunkLen);
+  return out;
+}
+
+/** Extracts an embedded `RR2.` challenge code from a tactical poster PNG. */
+export function extractChallengeFromPng(pngBytes: Uint8Array): string | null {
+  if (!hasPngSignature(pngBytes)) return null;
+  const decoder = new TextDecoder();
+  let offset = 8;
+  while (offset + 12 <= pngBytes.length) {
+    const length = readUint32BE(pngBytes, offset);
+    const dataStart = offset + 8;
+    const dataEnd = dataStart + length;
+    const next = dataEnd + 4;
+    if (next > pngBytes.length) return null;
+
+    const isText =
+      pngBytes[offset + 4] === 0x74 &&
+      pngBytes[offset + 5] === 0x45 &&
+      pngBytes[offset + 6] === 0x58 &&
+      pngBytes[offset + 7] === 0x74;
+    if (isText && length > POSTER_TEXT_KEYWORD.length + 1) {
+      let sep = -1;
+      for (let i = dataStart; i < dataEnd; i++) {
+        if (pngBytes[i] === 0) {
+          sep = i;
+          break;
+        }
+      }
+      if (sep > dataStart) {
+        const key = decoder.decode(pngBytes.subarray(dataStart, sep));
+        if (key === POSTER_TEXT_KEYWORD) {
+          const val = decoder.decode(pngBytes.subarray(sep + 1, dataEnd)).trim();
+          return val || null;
+        }
+      }
+    }
+
+    const isIend =
+      pngBytes[offset + 4] === 0x49 &&
+      pngBytes[offset + 5] === 0x45 &&
+      pngBytes[offset + 6] === 0x4e &&
+      pngBytes[offset + 7] === 0x44;
+    if (isIend) break;
+    offset = next;
+  }
+  return null;
+}
+
+function embedChallengeInDataUrl(dataUrl: string, challengeCode: string): string {
+  const prefix = "data:image/png;base64,";
+  if (!challengeCode || !dataUrl.startsWith(prefix)) return dataUrl;
+  try {
+    const raw = atob(dataUrl.slice(prefix.length));
+    const bytes = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+    const out = embedChallengeInPng(bytes, challengeCode);
+    let binary = "";
+    const step = 0x8000;
+    for (let i = 0; i < out.length; i += step) {
+      binary += String.fromCharCode(...out.subarray(i, i + step));
+    }
+    return `${prefix}${btoa(binary)}`;
+  } catch (_) {
+    return dataUrl;
+  }
+}
 
 const DISPLAY = '"Barlow Condensed","Arial Narrow",sans-serif';
 const MONO = '"IBM Plex Mono","SFMono-Regular",monospace';
@@ -77,7 +244,8 @@ export class PosterGenerator {
 
   download(distance: number): void {
     const link = document.createElement("a");
-    link.href = this.canvas.toDataURL("image/png");
+    const rawUrl = this.canvas.toDataURL("image/png");
+    link.href = embedChallengeInDataUrl(rawUrl, this.currentCode);
     link.download = `ridge-run-${Math.max(0, Math.floor(distance))}m.png`;
     document.body.appendChild(link);
     link.click();
@@ -650,11 +818,11 @@ export class PosterGenerator {
     );
     this.text(
       ctx,
-      "CHALLENGE CODE",
+      "PNG 内嵌完整战书 · CHALLENGE",
       1138,
       602,
-      `500 8px ${MONO}`,
-      withAlpha(PAPER, 0.32),
+      `500 8px ${MONO}, ${SANS}`,
+      withAlpha(PAPER, 0.36),
       "right",
     );
   }

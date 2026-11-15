@@ -49,19 +49,40 @@ export const roundRect = (
 export const formatCoins = (n: number): string =>
   Math.max(0, Math.floor(n)).toLocaleString("zh-CN");
 
+const hexIntCache = new Map<string, number>();
+const rgbaPrefixCache = new Map<string, string>();
+
+const parseHexInt = (hex: string): number => {
+  let n = hexIntCache.get(hex);
+  if (n === undefined) {
+    n = parseInt(hex.slice(1), 16);
+    if (hexIntCache.size >= 1024) hexIntCache.clear();
+    hexIntCache.set(hex, n);
+  }
+  return n;
+};
+
 /** `#rrggbb` → `rgba(r,g,b,a)`. */
 export const withAlpha = (hex: string, alpha: number): string => {
-  const n = parseInt(hex.slice(1), 16);
-  const r = (n >> 16) & 255;
-  const g = (n >> 8) & 255;
-  const b = n & 255;
-  return `rgba(${r},${g},${b},${alpha})`;
+  let prefix = rgbaPrefixCache.get(hex);
+  if (prefix === undefined) {
+    const n = parseHexInt(hex);
+    const r = (n >> 16) & 255;
+    const g = (n >> 8) & 255;
+    const b = n & 255;
+    prefix = `rgba(${r},${g},${b},`;
+    if (rgbaPrefixCache.size >= 1024) rgbaPrefixCache.clear();
+    rgbaPrefixCache.set(hex, prefix);
+  }
+  return `${prefix}${alpha})`;
 };
 
 /** Linear blend between two `#rrggbb` colours. */
 export const mixHex = (a: string, b: string, t: number): string => {
-  const ka = parseInt(a.slice(1), 16);
-  const kb = parseInt(b.slice(1), 16);
+  if (t <= 0 || a === b) return a;
+  if (t >= 1) return b;
+  const ka = parseHexInt(a);
+  const kb = parseHexInt(b);
   const ar = (ka >> 16) & 255;
   const ag = (ka >> 8) & 255;
   const ab = ka & 255;

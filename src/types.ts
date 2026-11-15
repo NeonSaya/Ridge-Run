@@ -372,6 +372,8 @@ export interface HudSnapshot {
   nitro: number;
   magnet: number;
   combo: number;
+  cameraWidth: number;
+  baseCameraWidth: number;
 }
 
 export type RunEndReason = "fuel" | "crash";

@@ -4,31 +4,39 @@ import { heightAt } from "../physics/terrain";
 import type { RenderContext, SurfacePatch, UpdraftVent } from "../types";
 import { hash, TAU, withAlpha } from "../utils";
 
-interface ScreenPoint {
-  x: number;
-  y: number;
-  wx: number;
-  wy: number;
-}
-
 /** Playable ridge, biome-tinted cut faces, ice/mud bands, vents and gates. */
 export class TerrainRenderer {
+  private surfX: number[] = [];
+  private surfY: number[] = [];
+  private patchX: number[] = [];
+  private patchY: number[] = [];
+  private groundGradKey = "";
+  private groundGrad: CanvasGradient | null = null;
+
   draw(rc: RenderContext): void {
     const { ctx, width: W, height: H, view, palette: p } = rc;
-    const pts = this.surfacePoints(rc, 6);
-    if (!pts.length) return;
+    const count = this.fillSurfacePoints(rc, 6);
+    if (!count) return;
+    const surfX = this.surfX;
+    const surfY = this.surfY;
 
     ctx.beginPath();
-    ctx.moveTo(pts[0]!.x, H + 30);
-    for (const point of pts) ctx.lineTo(point.x, point.y);
-    ctx.lineTo(pts[pts.length - 1]!.x, H + 30);
+    ctx.moveTo(surfX[0]!, H + 30);
+    for (let i = 0; i < count; i++) ctx.lineTo(surfX[i]!, surfY[i]!);
+    ctx.lineTo(surfX[count - 1]!, H + 30);
     ctx.closePath();
-    const g = ctx.createLinearGradient(0, H * 0.35, 0, H + 20);
-    g.addColorStop(0, p.groundTop);
-    g.addColorStop(0.36, p.groundUpper);
-    g.addColorStop(0.74, p.groundMid);
-    g.addColorStop(1, p.groundBottom);
-    ctx.fillStyle = g;
+
+    const gradKey = `${H}|${p.groundTop}|${p.groundUpper}|${p.groundMid}|${p.groundBottom}`;
+    if (!this.groundGrad || this.groundGradKey !== gradKey) {
+      const g = ctx.createLinearGradient(0, H * 0.35, 0, H + 20);
+      g.addColorStop(0, p.groundTop);
+      g.addColorStop(0.36, p.groundUpper);
+      g.addColorStop(0.74, p.groundMid);
+      g.addColorStop(1, p.groundBottom);
+      this.groundGrad = g;
+      this.groundGradKey = gradKey;
+    }
+    ctx.fillStyle = this.groundGrad;
     ctx.fill();
 
     this.drawHazards(rc);
@@ -36,12 +44,12 @@ export class TerrainRenderer {
     // topographic cut lines under the crest
     ctx.save();
     for (let layer = 1; layer <= 4; layer++) {
+      const offset = layer * Math.max(12, view.scale * 0.58);
       ctx.beginPath();
-      for (let i = 0; i < pts.length; i++) {
-        const point = pts[i]!;
-        const yy = point.y + layer * Math.max(12, view.scale * 0.58);
-        if (i === 0) ctx.moveTo(point.x, yy);
-        else ctx.lineTo(point.x, yy);
+      for (let i = 0; i < count; i++) {
+        const yy = surfY[i]! + offset;
+        if (i === 0) ctx.moveTo(surfX[i]!, yy);
+        else ctx.lineTo(surfX[i]!, yy);
       }
       const alpha =
         layer === 1 ? 0.26 : layer === 3 ? 0.13 : layer === 2 ? 0.07 : 0.05;
@@ -74,10 +82,9 @@ export class TerrainRenderer {
     // rim light: biome-tinted, still unmistakably Alpine Dusk
     ctx.save();
     ctx.beginPath();
-    for (let i = 0; i < pts.length; i++) {
-      const point = pts[i]!;
-      if (i === 0) ctx.moveTo(point.x, point.y);
-      else ctx.lineTo(point.x, point.y);
+    for (let i = 0; i < count; i++) {
+      if (i === 0) ctx.moveTo(surfX[i]!, surfY[i]!);
+      else ctx.lineTo(surfX[i]!, surfY[i]!);
     }
     ctx.strokeStyle = withAlpha(p.rimHalo, p.nightFactor > 0.5 ? 0.24 : 0.3);
     ctx.lineWidth = 9;
@@ -182,15 +189,19 @@ export class TerrainRenderer {
     ctx.restore();
   }
 
-  private surfacePoints(rc: RenderContext, stepPx: number): ScreenPoint[] {
+  private fillSurfacePoints(rc: RenderContext, stepPx: number): number {
     const { width: W, view } = rc;
-    const pts: ScreenPoint[] = [];
+    const surfX = this.surfX;
+    const surfY = this.surfY;
+    let count = 0;
     for (let x = -20; x <= W + 20; x += stepPx) {
       const wx = view.x + (x - W * 0.5) / view.scale;
       const wy = heightAt(wx);
-      pts.push({ x, y: this.toScreenY(rc, wy), wx, wy });
+      surfX[count] = x;
+      surfY[count] = this.toScreenY(rc, wy);
+      count++;
     }
-    return pts;
+    return count;
   }
 
   /* ---------- ice / mud ---------- */
@@ -204,38 +215,42 @@ export class TerrainRenderer {
     }
   }
 
-  private patchPoints(rc: RenderContext, patch: SurfacePatch): number[][] {
-    const pts: number[][] = [];
+  private fillPatchPoints(rc: RenderContext, patch: SurfacePatch): number {
+    const patchX = this.patchX;
+    const patchY = this.patchY;
+    let count = 0;
     const step = 2.4;
     for (let x = patch.start; x < patch.end; x += step) {
-      pts.push([this.toScreenX(rc, x), this.toScreenY(rc, heightAt(x)), x]);
+      patchX[count] = this.toScreenX(rc, x);
+      patchY[count] = this.toScreenY(rc, heightAt(x));
+      count++;
     }
     const endX = patch.end;
-    pts.push([
-      this.toScreenX(rc, endX),
-      this.toScreenY(rc, heightAt(endX)),
-      endX,
-    ]);
-    return pts;
+    patchX[count] = this.toScreenX(rc, endX);
+    patchY[count] = this.toScreenY(rc, heightAt(endX));
+    count++;
+    return count;
   }
 
   private drawIcePatch(rc: RenderContext, patch: SurfacePatch): void {
     const { ctx, view } = rc;
-    const pts = this.patchPoints(rc, patch);
-    if (pts.length < 2) return;
+    const count = this.fillPatchPoints(rc, patch);
+    if (count < 2) return;
+    const patchX = this.patchX;
+    const patchY = this.patchY;
     const depth = Math.max(7, 1.3 * view.scale);
 
     ctx.save();
     ctx.beginPath();
-    ctx.moveTo(pts[0]![0]!, pts[0]![1]!);
-    for (let i = 1; i < pts.length; i++) {
-      ctx.lineTo(pts[i]![0]!, pts[i]![1]!);
+    ctx.moveTo(patchX[0]!, patchY[0]!);
+    for (let i = 1; i < count; i++) {
+      ctx.lineTo(patchX[i]!, patchY[i]!);
     }
-    for (let i = pts.length - 1; i >= 0; i--) {
-      ctx.lineTo(pts[i]![0]!, pts[i]![1]! + depth);
+    for (let i = count - 1; i >= 0; i--) {
+      ctx.lineTo(patchX[i]!, patchY[i]! + depth);
     }
     ctx.closePath();
-    const fill = ctx.createLinearGradient(0, pts[0]![1]!, 0, pts[0]![1]! + depth);
+    const fill = ctx.createLinearGradient(0, patchY[0]!, 0, patchY[0]! + depth);
     fill.addColorStop(0, "rgba(137,216,200,.34)");
     fill.addColorStop(0.5, "rgba(137,216,200,.14)");
     fill.addColorStop(1, "rgba(137,216,200,.02)");
@@ -245,9 +260,9 @@ export class TerrainRenderer {
     // crisp top edge
     ctx.globalCompositeOperation = "lighter";
     ctx.beginPath();
-    ctx.moveTo(pts[0]![0]!, pts[0]![1]!);
-    for (let i = 1; i < pts.length; i++) {
-      ctx.lineTo(pts[i]![0]!, pts[i]![1]!);
+    ctx.moveTo(patchX[0]!, patchY[0]!);
+    for (let i = 1; i < count; i++) {
+      ctx.lineTo(patchX[i]!, patchY[i]!);
     }
     ctx.strokeStyle = "rgba(137,216,200,.28)";
     ctx.lineWidth = 5;
@@ -259,37 +274,39 @@ export class TerrainRenderer {
     // crystalline zigzags inside the sheet
     ctx.strokeStyle = "rgba(226,255,250,.44)";
     ctx.lineWidth = 1;
-    for (let i = 1; i < pts.length - 1; i += 2) {
-      const x = pts[i]![0]!;
-      const y = pts[i]![1]!;
+    ctx.beginPath();
+    for (let i = 1; i < count - 1; i += 2) {
+      const x = patchX[i]!;
+      const y = patchY[i]!;
       const len = 5 + hash(i * 4.7 + patch.start) * 13;
-      ctx.beginPath();
       ctx.moveTo(x, y + 2);
       ctx.lineTo(x - len * 0.4, y + depth * 0.5);
       ctx.lineTo(x + len * 0.3, y + depth * 0.38);
       ctx.lineTo(x - len * 0.18, y + depth * 0.78);
-      ctx.stroke();
     }
+    ctx.stroke();
     ctx.restore();
   }
 
   private drawMudPatch(rc: RenderContext, patch: SurfacePatch): void {
     const { ctx, view } = rc;
-    const pts = this.patchPoints(rc, patch);
-    if (pts.length < 2) return;
+    const count = this.fillPatchPoints(rc, patch);
+    if (count < 2) return;
+    const patchX = this.patchX;
+    const patchY = this.patchY;
     const depth = Math.max(9, 1.6 * view.scale);
 
     ctx.save();
     ctx.beginPath();
-    ctx.moveTo(pts[0]![0]!, pts[0]![1]!);
-    for (let i = 1; i < pts.length; i++) {
-      ctx.lineTo(pts[i]![0]!, pts[i]![1]!);
+    ctx.moveTo(patchX[0]!, patchY[0]!);
+    for (let i = 1; i < count; i++) {
+      ctx.lineTo(patchX[i]!, patchY[i]!);
     }
-    for (let i = pts.length - 1; i >= 0; i--) {
-      ctx.lineTo(pts[i]![0]!, pts[i]![1]! + depth);
+    for (let i = count - 1; i >= 0; i--) {
+      ctx.lineTo(patchX[i]!, patchY[i]! + depth);
     }
     ctx.closePath();
-    const fill = ctx.createLinearGradient(0, pts[0]![1]!, 0, pts[0]![1]! + depth);
+    const fill = ctx.createLinearGradient(0, patchY[0]!, 0, patchY[0]! + depth);
     fill.addColorStop(0, "rgba(86,49,28,.64)");
     fill.addColorStop(0.5, "rgba(62,34,19,.42)");
     fill.addColorStop(1, "rgba(36,19,11,.08)");
@@ -297,9 +314,9 @@ export class TerrainRenderer {
     ctx.fill();
 
     ctx.beginPath();
-    ctx.moveTo(pts[0]![0]!, pts[0]![1]!);
-    for (let i = 1; i < pts.length; i++) {
-      ctx.lineTo(pts[i]![0]!, pts[i]![1]!);
+    ctx.moveTo(patchX[0]!, patchY[0]!);
+    for (let i = 1; i < count; i++) {
+      ctx.lineTo(patchX[i]!, patchY[i]!);
     }
     ctx.strokeStyle = "rgba(126,78,42,.55)";
     ctx.lineWidth = Math.max(3, view.scale * 0.12);
@@ -312,10 +329,10 @@ export class TerrainRenderer {
     ctx.stroke();
 
     // bubbles and slop
-    for (let i = 1; i < pts.length - 1; i += 2) {
+    for (let i = 1; i < count - 1; i += 2) {
       const r = hash(i * 6.1 + patch.start);
-      const x = pts[i]![0]! + (r - 0.5) * 8;
-      const y = pts[i]![1]! + 3 + r * depth * 0.55;
+      const x = patchX[i]! + (r - 0.5) * 8;
+      const y = patchY[i]! + 3 + r * depth * 0.55;
       ctx.fillStyle = `rgba(28,15,9,${0.22 + r * 0.2})`;
       ctx.beginPath();
       ctx.ellipse(x, y, 1.4 + r * 3.4, 0.8 + r * 1.3, 0, 0, TAU);

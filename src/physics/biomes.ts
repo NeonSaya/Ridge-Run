@@ -286,6 +286,8 @@ export function blendPalettes(
 
 /* ---------- stage math ---------- */
 const STAGE_COUNT = BIOMES.length;
+const stageInfoCache = new Map<number, StageInfo>();
+const transitionPaletteCache = new Map<number, BiomePalette>();
 
 export function globalStageAt(distance: number): number {
   return Math.floor(Math.max(0, distance) / STAGE_LENGTH);
@@ -293,9 +295,11 @@ export function globalStageAt(distance: number): number {
 
 export function stageInfoAt(distance: number): StageInfo {
   const globalStage = globalStageAt(distance);
+  const cached = stageInfoCache.get(globalStage);
+  if (cached) return cached;
   const index = ((globalStage % STAGE_COUNT) + STAGE_COUNT) % STAGE_COUNT;
   const def = BIOMES[index]!;
-  return {
+  const info: StageInfo = {
     id: def.id,
     index,
     cycle: Math.floor(globalStage / STAGE_COUNT),
@@ -306,6 +310,25 @@ export function stageInfoAt(distance: number): StageInfo {
     hint: def.hint,
     accent: def.accent,
   };
+  if (stageInfoCache.size >= 256) stageInfoCache.clear();
+  stageInfoCache.set(globalStage, info);
+  return info;
+}
+
+function cachedBlend(fromIndex: number, toIndex: number, t: number): BiomePalette {
+  const step = Math.round(clamp(t, 0, 1) * 256);
+  if (step <= 0) return BIOMES[fromIndex]!.palette;
+  if (step >= 256) return BIOMES[toIndex]!.palette;
+  const key = (fromIndex << 12) | (toIndex << 9) | step;
+  const cached = transitionPaletteCache.get(key);
+  if (cached) return cached;
+  const blended = blendPalettes(
+    BIOMES[fromIndex]!.palette,
+    BIOMES[toIndex]!.palette,
+    step / 256,
+  );
+  transitionPaletteCache.set(key, blended);
+  return blended;
 }
 
 /** Blended palette for the car's current distance. */
@@ -326,7 +349,7 @@ export function biomePaletteAt(distance: number): BiomePalette {
       BIOME_TRANSITION * 2,
       within + BIOME_TRANSITION,
     );
-    return blendPalettes(BIOMES[previousIndex]!.palette, current, t);
+    return cachedBlend(previousIndex, index, t);
   }
   if (within > STAGE_LENGTH - BIOME_TRANSITION) {
     const nextIndex = (globalStage + 1) % STAGE_COUNT;
@@ -335,7 +358,7 @@ export function biomePaletteAt(distance: number): BiomePalette {
       BIOME_TRANSITION * 2,
       within - (STAGE_LENGTH - BIOME_TRANSITION),
     );
-    return blendPalettes(current, BIOMES[nextIndex]!.palette, t);
+    return cachedBlend(index, nextIndex, t);
   }
   return current;
 }
@@ -412,6 +435,7 @@ function profileForStage(stage: number): StageProfile {
         stage,
       });
     }
+    profile.patches.sort((a, b) => a.start - b.start);
   }
 
   if (local === 3) {
@@ -441,7 +465,6 @@ export function visiblePatches(x0: number, x1: number): SurfacePatch[] {
       if (patch.end > x0 && patch.start < x1) out.push(patch);
     }
   }
-  out.sort((a, b) => a.start - b.start);
   return out;
 }
 

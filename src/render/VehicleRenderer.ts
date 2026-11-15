@@ -21,6 +21,19 @@ import { clamp, roundRect, TAU, withAlpha } from "../utils";
  * wheels always line up with their suspension contact points.
  */
 export class VehicleRenderer {
+  private spinBuf: number[] = [0, 0, 0];
+  private rallyHeadGrad: CanvasGradient | null = null;
+  private rallyBodyGrad: CanvasGradient | null = null;
+  private motoTankGrad: CanvasGradient | null = null;
+  private truckBoxGrad: CanvasGradient | null = null;
+  private truckCabGrad: CanvasGradient | null = null;
+
+  private fillSpins(count: number, spin: number): number[] {
+    const out = this.spinBuf;
+    out.length = count;
+    for (let i = 0; i < count; i++) out[i] = spin;
+    return out;
+  }
   draw(rc: RenderContext, car: CarState, config: VehicleConfig): void {
     const { ctx, width: W, height: H, view, time } = rc;
     const sx = this.toScreenX(rc, car.x);
@@ -184,8 +197,8 @@ export class VehicleRenderer {
     ctx.save();
     ctx.globalCompositeOperation = "lighter";
     const glow = ctx.createRadialGradient(0, -scale * 0.1, 0, 0, 0, scale * 2.6);
-    glow.addColorStop(0, this.withAlpha(config.accent, 0.17));
-    glow.addColorStop(1, this.withAlpha(config.accent, 0));
+    glow.addColorStop(0, withAlpha(config.accent, 0.17));
+    glow.addColorStop(1, withAlpha(config.accent, 0));
     ctx.fillStyle = glow;
     ctx.beginPath();
     ctx.ellipse(0, -scale * 0.05, scale * 2.7, scale * 1.25, 0, 0, TAU);
@@ -212,7 +225,7 @@ export class VehicleRenderer {
     this.drawMachine(
       ctx,
       config,
-      config.wheelPositions.map(() => spin),
+      this.fillSpins(config.wheelPositions.length, spin),
       time,
     );
     ctx.restore();
@@ -270,7 +283,7 @@ export class VehicleRenderer {
     ctx.restore();
 
     const spin = (pose.x - START_X) / Math.max(0.18, config.wheelRadius);
-    const spins = config.wheelPositions.map(() => spin);
+    const spins = this.fillSpins(config.wheelPositions.length, spin);
 
     ctx.save();
     ctx.translate(sx, sy);
@@ -475,7 +488,7 @@ export class VehicleRenderer {
     this.drawMachine(
       ctx,
       config,
-      config.wheelPositions.map(() => wheelSpin),
+      this.fillSpins(config.wheelPositions.length, wheelSpin),
       time,
     );
     ctx.restore();
@@ -505,13 +518,13 @@ export class VehicleRenderer {
     ctx.save();
     ctx.strokeStyle = "rgba(13,24,19,.92)";
     ctx.lineWidth = 0.075;
+    ctx.beginPath();
     for (let i = 0; i < config.wheelPositions.length; i++) {
       const wx = config.wheelPositions[i]!;
-      ctx.beginPath();
       ctx.moveTo(wx * 0.46, 0.1);
       ctx.lineTo(wx, config.wheelLocalY);
-      ctx.stroke();
     }
+    ctx.stroke();
     ctx.restore();
 
     for (let i = 0; i < config.wheelPositions.length; i++) {
@@ -553,16 +566,16 @@ export class VehicleRenderer {
     ctx.strokeStyle = "rgba(244,232,210,.16)";
     ctx.lineWidth = 0.04;
     const treads = config.id === "moto" ? 12 : 8;
+    ctx.beginPath();
     for (let k = 0; k < treads; k++) {
       const a = (k / treads) * TAU;
-      ctx.beginPath();
       ctx.moveTo(
         Math.cos(a) * (radius - 0.08),
         Math.sin(a) * (radius - 0.08),
       );
       ctx.lineTo(Math.cos(a) * radius, Math.sin(a) * radius);
-      ctx.stroke();
     }
+    ctx.stroke();
 
     // rim
     const rimColor =
@@ -583,16 +596,16 @@ export class VehicleRenderer {
     ctx.strokeStyle = rimColor;
     ctx.lineWidth = 0.045;
     const spokes = config.id === "truck" ? 6 : 4;
+    ctx.beginPath();
     for (let k = 0; k < spokes; k++) {
       const a = (k / spokes) * TAU;
-      ctx.beginPath();
       ctx.moveTo(Math.cos(a) * radius * 0.1, Math.sin(a) * radius * 0.1);
       ctx.lineTo(
         Math.cos(a) * radius * 0.33,
         Math.sin(a) * radius * 0.33,
       );
-      ctx.stroke();
     }
+    ctx.stroke();
 
     // hub light catches the sunrise
     ctx.fillStyle = config.id === "truck" ? "#f0b15e" : "#d8c59f";
@@ -607,21 +620,27 @@ export class VehicleRenderer {
     // headlight warm wash
     ctx.save();
     ctx.globalCompositeOperation = "screen";
-    const head = ctx.createRadialGradient(1.4, -0.04, 0, 1.4, -0.04, 2.2);
-    head.addColorStop(0, "rgba(255,220,152,.22)");
-    head.addColorStop(1, "rgba(255,220,152,0)");
-    ctx.fillStyle = head;
+    if (!this.rallyHeadGrad) {
+      const head = ctx.createRadialGradient(1.4, -0.04, 0, 1.4, -0.04, 2.2);
+      head.addColorStop(0, "rgba(255,220,152,.22)");
+      head.addColorStop(1, "rgba(255,220,152,0)");
+      this.rallyHeadGrad = head;
+    }
+    ctx.fillStyle = this.rallyHeadGrad;
     ctx.beginPath();
     ctx.arc(1.4, -0.04, 2.2, 0, TAU);
     ctx.fill();
     ctx.restore();
 
     this.rallySilhouette(ctx);
-    const bodyG = ctx.createLinearGradient(0, -0.72, 0, 0.32);
-    bodyG.addColorStop(0, "#f5ead6");
-    bodyG.addColorStop(0.5, "#e6d3ae");
-    bodyG.addColorStop(1, "#bf9b6d");
-    ctx.fillStyle = bodyG;
+    if (!this.rallyBodyGrad) {
+      const bodyG = ctx.createLinearGradient(0, -0.72, 0, 0.32);
+      bodyG.addColorStop(0, "#f5ead6");
+      bodyG.addColorStop(0.5, "#e6d3ae");
+      bodyG.addColorStop(1, "#bf9b6d");
+      this.rallyBodyGrad = bodyG;
+    }
+    ctx.fillStyle = this.rallyBodyGrad;
     ctx.fill();
     ctx.strokeStyle = "rgba(13,25,19,.9)";
     ctx.lineWidth = 0.065;
@@ -786,10 +805,13 @@ export class VehicleRenderer {
     ctx.closePath();
     ctx.fill();
 
-    const tank = ctx.createLinearGradient(0, -0.62, 0, -0.34);
-    tank.addColorStop(0, "#f28a5f");
-    tank.addColorStop(1, "#c34127");
-    ctx.fillStyle = tank;
+    if (!this.motoTankGrad) {
+      const tank = ctx.createLinearGradient(0, -0.62, 0, -0.34);
+      tank.addColorStop(0, "#f28a5f");
+      tank.addColorStop(1, "#c34127");
+      this.motoTankGrad = tank;
+    }
+    ctx.fillStyle = this.motoTankGrad;
     ctx.beginPath();
     ctx.ellipse(0.12, -0.46, 0.26, 0.14, -0.12, 0, TAU);
     ctx.fill();
@@ -918,11 +940,14 @@ export class VehicleRenderer {
     ctx.stroke();
 
     // cargo container
-    const box = ctx.createLinearGradient(0, -0.98, 0, 0.18);
-    box.addColorStop(0, "#6f8a7d");
-    box.addColorStop(0.55, "#47645a");
-    box.addColorStop(1, "#2a4038");
-    ctx.fillStyle = box;
+    if (!this.truckBoxGrad) {
+      const box = ctx.createLinearGradient(0, -0.98, 0, 0.18);
+      box.addColorStop(0, "#6f8a7d");
+      box.addColorStop(0.55, "#47645a");
+      box.addColorStop(1, "#2a4038");
+      this.truckBoxGrad = box;
+    }
+    ctx.fillStyle = this.truckBoxGrad;
     ctx.strokeStyle = "rgba(9,22,17,.9)";
     ctx.lineWidth = 0.045;
     roundRect(ctx, -2.16, -0.94, 2.42, 1.12, 0.05);
@@ -933,13 +958,13 @@ export class VehicleRenderer {
     ctx.save();
     ctx.strokeStyle = "rgba(10,26,20,.4)";
     ctx.lineWidth = 0.028;
+    ctx.beginPath();
     for (let i = 0; i < 7; i++) {
       const x = -2.06 + i * 0.34;
-      ctx.beginPath();
       ctx.moveTo(x, -0.88);
       ctx.lineTo(x, 0.12);
-      ctx.stroke();
     }
+    ctx.stroke();
     ctx.restore();
 
     // hazard stripe + polar band
@@ -961,10 +986,13 @@ export class VehicleRenderer {
     ctx.fillText("6×6 · ARCTIC SPEC", -2.0, -0.65);
 
     // cab
-    const cab = ctx.createLinearGradient(0, -1.02, 0, 0.22);
-    cab.addColorStop(0, "#f0e7d1");
-    cab.addColorStop(0.55, "#d7c6a2");
-    cab.addColorStop(1, "#ab8e65");
+    if (!this.truckCabGrad) {
+      const cab = ctx.createLinearGradient(0, -1.02, 0, 0.22);
+      cab.addColorStop(0, "#f0e7d1");
+      cab.addColorStop(0.55, "#d7c6a2");
+      cab.addColorStop(1, "#ab8e65");
+      this.truckCabGrad = cab;
+    }
     ctx.beginPath();
     ctx.moveTo(0.34, -1.0);
     ctx.lineTo(1.2, -1.0);
@@ -973,7 +1001,7 @@ export class VehicleRenderer {
     ctx.lineTo(1.72, 0.2);
     ctx.lineTo(0.34, 0.22);
     ctx.closePath();
-    ctx.fillStyle = cab;
+    ctx.fillStyle = this.truckCabGrad;
     ctx.fill();
     ctx.strokeStyle = "rgba(10,23,17,.9)";
     ctx.lineWidth = 0.05;
@@ -1115,14 +1143,6 @@ export class VehicleRenderer {
   }
 
   /* ---------- helpers ---------- */
-  private withAlpha(hex: string, alpha: number): string {
-    const n = parseInt(hex.slice(1), 16);
-    const r = (n >> 16) & 255;
-    const g = (n >> 8) & 255;
-    const b = n & 255;
-    return `rgba(${r},${g},${b},${alpha})`;
-  }
-
   private toScreenX(rc: RenderContext, x: number): number {
     return rc.width * 0.5 + (x - rc.view.x) * rc.view.scale;
   }
