@@ -220,6 +220,8 @@ export class HudController {
     this.pauseFovValue.textContent = label;
     this.introFovRange.value = String(w);
     this.pauseFovRange.value = String(w);
+    this.introFovRange.setAttribute("aria-valuetext", label);
+    this.pauseFovRange.setAttribute("aria-valuetext", label);
 
     const atMin = w <= MIN_CAMERA_WIDTH;
     const atMax = w >= MAX_CAMERA_WIDTH;

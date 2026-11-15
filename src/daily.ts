@@ -19,7 +19,18 @@ export function utcDateKey(date: Date = new Date()): string {
 }
 
 export function isDateKey(value: unknown): value is string {
-  return typeof value === "string" && DATE_KEY_PATTERN.test(value);
+  if (typeof value !== "string" || !DATE_KEY_PATTERN.test(value)) return false;
+  const [yStr, mStr, dStr] = value.split("-");
+  const year = Number(yStr);
+  const month = Number(mStr);
+  const day = Number(dStr);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+  const dt = new Date(Date.UTC(year, month - 1, day));
+  return (
+    dt.getUTCFullYear() === year &&
+    dt.getUTCMonth() === month - 1 &&
+    dt.getUTCDate() === day
+  );
 }
 
 /** FNV-1a over the date string, guaranteed non-zero so seed 0 stays standard. */
@@ -57,8 +68,9 @@ export function refreshDaily(
   save: GameSave,
   today: string = utcDateKey(),
 ): boolean {
-  if (save.dailyDate === today) return false;
-  save.dailyDate = today;
+  const validToday = isDateKey(today) ? today : utcDateKey();
+  if (save.dailyDate === validToday) return false;
+  save.dailyDate = validToday;
   save.dailyBest = 0;
   save.dailyFirstClaimed = false;
   save.dailyGhost = null;
@@ -84,23 +96,25 @@ export function settleDaily(
   save: GameSave,
   finalDistance: number,
 ): DailySettlement {
-  const previousBest = save.dailyBest;
-  const dailyRecord = finalDistance > previousBest;
+  const dist = Number.isFinite(finalDistance)
+    ? Math.max(0, Math.floor(finalDistance))
+    : 0;
+  const previousBest = Number.isFinite(save.dailyBest)
+    ? Math.max(0, Math.floor(save.dailyBest))
+    : 0;
+  const dailyRecord = dist > previousBest;
   let firstClaim = false;
   let bounty = 0;
 
-  if (!save.dailyFirstClaimed && finalDistance > DAILY_FIRST_MIN_DISTANCE) {
+  if (!save.dailyFirstClaimed && dist > DAILY_FIRST_MIN_DISTANCE) {
     save.dailyFirstClaimed = true;
     firstClaim = true;
     bounty += DAILY_FIRST_BOUNTY;
   }
-  if (
-    finalDistance > DAILY_RECORD_MIN_DISTANCE &&
-    finalDistance > previousBest
-  ) {
+  if (dist > DAILY_RECORD_MIN_DISTANCE && dist > previousBest) {
     bounty += DAILY_RECORD_BOUNTY;
   }
-  if (dailyRecord) save.dailyBest = finalDistance;
+  if (dailyRecord) save.dailyBest = dist;
 
   return { dailyRecord, firstClaim, bounty };
 }

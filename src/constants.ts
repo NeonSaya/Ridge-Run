@@ -41,7 +41,10 @@ export const CRASH_SETTLE_TIME = 1.35;
 /* ---------- persistence ---------- */
 export const SAVE_KEY = "ridge-run-v2";
 export const LEGACY_SAVE_KEY = "ridge-run-v1";
+export const SAVE_BACKUP_KEY = "ridge-run-v2-backup";
+export const LEGACY_BACKUP_KEY = "ridge-run-v1-backup";
 export const MAX_UPGRADE_LEVEL = 10;
+export const MAX_SAVE_INT = 100_000_000;
 
 /* ---------- stunt scoring ---------- */
 export const JUMP_STAGES = [
@@ -76,6 +79,9 @@ export const MAGNET_RADIUS = 6.8;
 export const GHOST_SAMPLE_INTERVAL = 0.15;
 export const GHOST_MAX_FRAMES = 1200;
 export const GHOST_SHARE_MAX_FRAMES = 240;
+export const MAX_GHOST_DISTANCE = 250_000;
+export const MAX_GHOST_SHARE_STRIDE_V1 = 255;
+export const MAX_GHOST_STRIDE = 65535;
 export const GHOST_CODE_PREFIX = "RR2.";
 export const GHOST_ALPHA = 0.32;
 export const GHOST_FINISHED_ALPHA = 0.22;

@@ -81,7 +81,13 @@ import { ParticleSystem } from "./render/ParticleSystem";
 import { SkyRenderer } from "./render/SkyRenderer";
 import { TerrainRenderer } from "./render/TerrainRenderer";
 import { VehicleRenderer } from "./render/VehicleRenderer";
-import { flushSave, loadSave, persistSave } from "./storage";
+import {
+  flushSave,
+  getSaveReport,
+  loadSave,
+  onStorageError,
+  persistSave,
+} from "./storage";
 import type {
   CameraState,
   CarState,
@@ -135,7 +141,14 @@ const view: ViewState = { x: START_X, y: 0, scale: 30 };
 const hud = new HudController();
 const overlays = new Overlays();
 const save = loadSave();
-if (refreshDaily(save)) persistSave(save, true);
+const bootSaveReport = getSaveReport();
+if (
+  refreshDaily(save) &&
+  !bootSaveReport.preserveRawPrimary &&
+  !bootSaveReport.storageReadBlocked
+) {
+  persistSave(save, true);
+}
 
 const missionTracker = new MissionTracker(save.missions);
 const missionBoard = new MissionBoard();
@@ -300,9 +313,8 @@ function computeBaseScale(width: number, cameraWidth: number): number {
     MIN_CAMERA_WIDTH,
     MAX_CAMERA_WIDTH,
   );
-  // 默认可视宽度进一步拉近至 36 世界单位（上限 58 保证 2K/超宽屏同步拉近），并按用户设定比例联动上下限
-  const zoomRatio = DEFAULT_CAMERA_WIDTH / targetWidth;
-  return clamp(width / targetWidth, 16 * zoomRatio, 58 * zoomRatio);
+  const safeWidth = Number.isFinite(width) && width > 0 ? width : 1;
+  return safeWidth / targetWidth;
 }
 
 function resize(): void {
@@ -872,7 +884,9 @@ function dailyContext(): {
   seed: number;
   vehicleId: VehicleId;
 } {
-  if (refreshDaily(save)) persistSave(save, true);
+  if (refreshDaily(save) && !getSaveReport().preserveRawPrimary) {
+    persistSave(save, true);
+  }
   const seed = dailySeedFor(save.dailyDate);
   return {
     dateKey: save.dailyDate,
@@ -911,7 +925,7 @@ function resolveRunConfig(mode: RunMode): RunConfig {
       ghostKind: "rival",
       recordMode: daily ? "daily" : "standard",
       dateKey: daily ? ghost.dateKey : undefined,
-      modeLabel: `战书挑战 · #${config.number} · 目标 ${ghost.distance}m`,
+      modeLabel: `战书 · #${config.number} · ${daily ? "公平Lv.5" : "自备车辆"} ${ghost.distance}m`,
     };
   }
   return {
@@ -1047,8 +1061,14 @@ function startRun(mode: RunMode = runMode): void {
     hud.showToast("尚无战书", "先在首页载入好友的挑战码");
     return;
   }
+  const previousDailyDate = save.dailyDate;
   runMode = mode;
   runConfig = resolveRunConfig(mode);
+  const dailyRolledOnStart =
+    mode === "daily" &&
+    previousDailyDate !== "" &&
+    previousDailyDate !== save.dailyDate;
+  if (dailyRolledOnStart) updateModeUi();
   if (garage.isOpen) garage.close();
   audio.ensure();
   overlays.hideAll();
@@ -1066,13 +1086,16 @@ function startRun(mode: RunMode = runMode): void {
   if (mode === "daily") {
     audio.dailyStart();
     hud.showToast(
-      "每日试炼发车",
+      dailyRolledOnStart ? "UTC 新日切换 · 每日试炼" : "每日试炼发车",
       `${save.dailyDate} · #${config.number} ${config.name} · Lv.5 公平规格`,
     );
   } else if (mode === "challenge" && loadedChallenge) {
+    const daily = loadedChallenge.mode === "daily";
     hud.showToast(
       "战书应战",
-      `目标 ${loadedChallenge.distance}m · 相同种子 ${seedHex(loadedChallenge.seed)}`,
+      daily
+        ? `目标 ${loadedChallenge.distance}m · 官方 #${config.number} ${config.name} · Lv.5 公平规格`
+        : `目标 ${loadedChallenge.distance}m · 使用自备 #${config.number} ${config.name} 同地形竞速`,
     );
   } else if (runConfig.ghost) {
     hud.showToast(
@@ -1190,9 +1213,13 @@ function endRun(reason: RunEndReason): void {
         : "",
   };
 
-  // Prepare the next "again" run. Daily re-rolls automatically at UTC midnight.
+  // Keep a just-settled daily result intact across UTC midnight through persistence
+  // and the summary screen; the next "again" run or home transition rolls over.
   if (mode === "standard") runConfig = resolveRunConfig("standard");
-  else if (mode === "daily") runConfig = resolveRunConfig("daily");
+  const dailyRolledOver =
+    mode === "daily" &&
+    Boolean(runConfig.dateKey) &&
+    runConfig.dateKey !== utcDateKey();
 
   persistSave(save, true);
 
@@ -1211,6 +1238,7 @@ function endRun(reason: RunEndReason): void {
     challengeWin,
     rivalDistance,
     dailyRecord,
+    dailyRolledOver,
     highlightStunt: highestStunt,
     ghostOutcome,
     bounty: bountyTotal,
@@ -1224,7 +1252,9 @@ function goHome(): void {
   if (garage.isOpen) garage.close();
   state = "intro";
   runMode = "standard";
-  if (refreshDaily(save)) persistSave(save, true);
+  if (refreshDaily(save) && !getSaveReport().preserveRawPrimary) {
+    persistSave(save, true);
+  }
   runConfig = resolveRunConfig("standard");
   lastSummary = null;
   clearPressed();
@@ -1853,6 +1883,16 @@ overlays.notice.addEventListener("click", (event) => {
 });
 
 /* ---------- events ---------- */
+function isFormControl(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  return (
+    target.tagName === "INPUT" ||
+    target.tagName === "TEXTAREA" ||
+    target.tagName === "SELECT"
+  );
+}
+
 function handleKeyDown(event: KeyboardEvent): void {
   if (event.repeat) return;
   const code = event.code;
@@ -1902,6 +1942,18 @@ function handleKeyDown(event: KeyboardEvent): void {
     return;
   }
 
+  if (isFormControl(event.target)) {
+    if (code === "Escape") {
+      if (state === "paused") {
+        event.preventDefault();
+        resumeGame();
+      } else if (event.target instanceof HTMLElement) {
+        event.target.blur();
+      }
+    }
+    return;
+  }
+
   if (code === "KeyN" && state === "intro") {
     event.preventDefault();
     openNoticeModal();
@@ -1930,11 +1982,7 @@ function handleKeyDown(event: KeyboardEvent): void {
     audio.toggleMuted();
     return;
   }
-  if (
-    targetTag !== "INPUT" &&
-    targetTag !== "TEXTAREA" &&
-    (state === "intro" || state === "playing" || state === "paused")
-  ) {
+  if (state === "intro" || state === "playing" || state === "paused") {
     if (code === "BracketLeft" || code === "Minus") {
       event.preventDefault();
       stepCameraWidth(-CAMERA_WIDTH_STEP);
@@ -2032,8 +2080,9 @@ const challengeStatus = byId("challengeStatus");
 function updateModeUi(): void {
   const today = utcDateKey();
   if (save.dailyDate !== today) {
-    refreshDaily(save, today);
-    persistSave(save, true);
+    if (refreshDaily(save, today) && !getSaveReport().preserveRawPrimary) {
+      persistSave(save, true);
+    }
   }
   const seed = dailySeedFor(save.dailyDate || today);
   const vehicle = VEHICLES[dailyVehicleFor(seed)];
@@ -2041,11 +2090,17 @@ function updateModeUi(): void {
   dailyBtnMeta.textContent = `${save.dailyDate || today} · #${vehicle.number} ${vehicle.name}${bestLine}`;
 
   if (loadedChallenge) {
-    const config = VEHICLES[loadedChallenge.vehicleId];
+    const daily = loadedChallenge.mode === "daily";
+    const ruleVehicle = daily
+      ? dailyVehicleFor(loadedChallenge.seed)
+      : loadedChallenge.vehicleId;
+    const config = VEHICLES[ruleVehicle];
     challengeBanner.hidden = false;
     challengeBannerTarget.textContent = `目标 ${loadedChallenge.distance}m`;
-    challengeBannerMeta.textContent = `${loadedChallenge.mode === "daily" ? "DAILY" : "STANDARD"} · #${config.number} ${config.name} · SEED ${seedHex(loadedChallenge.seed)}`;
-    challengeBtnMeta.textContent = `已载入战书 · 目标 ${loadedChallenge.distance}m`;
+    challengeBannerMeta.textContent = daily
+      ? `每日战书 · 官方同车 #${config.number} ${config.name} · Lv.5 公平 · SEED ${seedHex(loadedChallenge.seed)}`
+      : `常规战书 · 同地形自备车库 · 对手 #${config.number} ${config.name} · SEED ${seedHex(loadedChallenge.seed)}`;
+    challengeBtnMeta.textContent = `已载入${daily ? "每日" : "常规"}战书 · 目标 ${loadedChallenge.distance}m`;
   } else {
     challengeBanner.hidden = true;
     challengeBtnMeta.textContent = "粘贴挑战码 / 打开好友战书";
@@ -2230,7 +2285,20 @@ function downloadPoster(): void {
 }
 
 /* ---------- boot ---------- */
+let lastStorageToastAt = 0;
+
+function notifyStorageError(): void {
+  const now = performance.now();
+  if (now - lastStorageToastAt < 6000) return;
+  lastStorageToastAt = now;
+  hud.showToast(
+    "存档写入受限",
+    "本地存储空间不足或已禁用，当前进度仅保存在内存中",
+  );
+}
+
 function boot(): void {
+  onStorageError(notifyStorageError);
   resize();
   atmosphereRenderer.init(ctx);
 
@@ -2256,6 +2324,35 @@ function boot(): void {
   hud.update(snapshot(), true);
   missionBoard.sync(save.missions, true);
   hud.hideToast();
+  const startupReport = getSaveReport();
+  if (startupReport.storageReadBlocked) {
+    lastStorageToastAt = performance.now();
+    hud.showToast(
+      "本地存档受限",
+      "浏览器禁止读取存储，将以只读内存模式运行并保留原存档",
+    );
+  } else if (startupReport.corruptRecovered) {
+    if (startupReport.writeFailed) lastStorageToastAt = performance.now();
+    hud.showToast(
+      "已恢复损坏存档",
+      startupReport.backupSaved && !startupReport.writeFailed
+        ? "异常数据已备份至 ridge-run-v2-backup"
+        : startupReport.backupSaved
+          ? "已备份异常数据至 ridge-run-v2-backup，但新存档写入受限（暂存内存）"
+          : "备份与写入受限，当前以只读内存模式运行并保留原存档",
+    );
+  } else if (startupReport.writeFailed) {
+    lastStorageToastAt = performance.now();
+    hud.showToast(
+      "存档写入受限",
+      "初始存档写入或迁移失败（存储空间不足或已禁用），当前仅保存在内存中",
+    );
+  } else if (startupReport.repairedFields.length > 0) {
+    hud.showToast(
+      "存档字段已修复",
+      "检测到异常数值或记录，其余有效进度已保留",
+    );
+  }
 
   requestAnimationFrame(frame);
 }
@@ -2299,6 +2396,9 @@ document.addEventListener("visibilitychange", () => {
 window.addEventListener("focus", () => {
   if (state === "intro") updateModeUi();
 });
+window.setInterval(() => {
+  if (state === "intro") updateModeUi();
+}, 30_000);
 
 byId("startBtn").addEventListener("click", () => startRun("standard"));
 byId("dailyBtn").addEventListener("click", () => startRun("daily"));
@@ -2333,14 +2433,12 @@ byId("pauseMuteBtn").addEventListener("click", () => {
   audio.toggleMuted();
 });
 byId("fovBtn").addEventListener("click", cycleCameraPreset);
-byId<HTMLInputElement>("introFovRange").addEventListener("input", (event) => {
-  const val = Number((event.currentTarget as HTMLInputElement).value);
-  setCameraWidth(val);
-});
-byId<HTMLInputElement>("pauseFovRange").addEventListener("input", (event) => {
-  const val = Number((event.currentTarget as HTMLInputElement).value);
-  setCameraWidth(val);
-});
+for (const id of ["introFovRange", "pauseFovRange"] as const) {
+  const input = byId<HTMLInputElement>(id);
+  const apply = (): void => setCameraWidth(Number(input.value));
+  input.addEventListener("input", apply);
+  input.addEventListener("change", apply);
+}
 byId("introFovDecBtn").addEventListener("click", () =>
   stepCameraWidth(-CAMERA_WIDTH_STEP),
 );

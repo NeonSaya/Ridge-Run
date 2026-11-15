@@ -886,7 +886,7 @@ kbd{
   -webkit-appearance:none;appearance:none;width:100%;height:4px;margin:0;
   background:rgba(244,232,210,.16);outline:none;cursor:pointer;
 }
-.fov-range:focus-visible{outline:1px solid var(--amber);outline-offset:4px}
+.fov-range:focus-visible{outline:2px solid var(--amber);outline-offset:4px}
 .fov-range::-webkit-slider-thumb{
   -webkit-appearance:none;appearance:none;width:13px;height:13px;border-radius:50%;
   background:var(--amber);border:2px solid var(--ink);box-shadow:0 0 10px rgba(240,177,94,.55);

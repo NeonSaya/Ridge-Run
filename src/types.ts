@@ -38,6 +38,8 @@ export interface GhostRecord {
   distance: number;
   frames: number[];
   stride?: number;
+  /** Recorded run duration in seconds so end-time playback matches finish exactly. */
+  duration?: number;
 }
 
 export type MissionKind =
@@ -408,6 +410,7 @@ export interface RunResult {
   challengeWin: boolean;
   rivalDistance: number;
   dailyRecord: boolean;
+  dailyRolledOver?: boolean;
   highlightStunt: string;
   ghostOutcome: string;
   bounty: number;

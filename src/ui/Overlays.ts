@@ -184,9 +184,15 @@ export class Overlays {
     } else if (result.mode === "daily") {
       this.overTitle.textContent =
         result.reason === "crash" ? "试炼中止" : "试炼结束";
-      this.overCopy.textContent = result.dailyRecord
-        ? `今日最佳刷新至 ${result.best}m。明日 UTC 零点，新的山脊会重新生成。`
-        : "今日试炼成绩已记录。明日 UTC 零点，新的种子与官方车型会重新抽取。";
+      if (result.dailyRolledOver) {
+        this.overCopy.textContent = result.dailyRecord
+          ? `刚刚刷新的试炼最佳已锁定为 ${result.best}m。UTC 零点已过，下一局将切换今日新种子与官方车型。`
+          : "本局每日试炼成绩已完整记入原日期榜单。UTC 零点已过，下一局将切换今日新种子与官方车型。";
+      } else {
+        this.overCopy.textContent = result.dailyRecord
+          ? `今日最佳刷新至 ${result.best}m。明日 UTC 零点，新的山脊会重新生成。`
+          : "今日试炼成绩已记录。明日 UTC 零点，新的种子与官方车型会重新抽取。";
+      }
     } else if (result.reason === "crash") {
       this.overTitle.textContent = "翻车出局";
       this.overCopy.textContent = result.record
