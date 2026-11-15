@@ -3,8 +3,9 @@ import { mulberry32, smoothstep } from "../utils";
 
 /**
  * Endless ridge profile. `x` is world metres.
- * Left of the start line the ground drops away steeply, and the game clamps
- * the car's X before the fall, so the world has no visible wall.
+ * The start line sits on a 2.5 m flat shelf; immediately left of it the
+ * ground drops away steeply, and the game clamps the car's X before the fall,
+ * so the world has no visible wall.
  *
  * Every 2000 m the biome cycle repeats with progressively taller relief. The
  * extra amplitude ramps in over the first 140 m of a cycle so the surface
@@ -82,7 +83,11 @@ export function onWorldSeedChange(listener: SeedListener): void {
 
 export function heightAt(x: number): number {
   const d = x - START_X;
-  if (d < 0) return -Math.min(d * d * 0.35, 18);
+  if (d < -2.5) {
+    const back = d + 2.5;
+    return -Math.min(back * back * 0.35, 18);
+  }
+  if (d < 0) return 0;
   const ramp = smoothstep(7, 43, d);
   const cycle = Math.floor(Math.max(d, 0) / BIOME_PERIOD);
   const cycleBoost =

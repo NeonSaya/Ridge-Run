@@ -8,6 +8,9 @@ import {
   NITRO_CRUISE,
   NITRO_MAX_SPEED,
   NITRO_THRUST,
+  REVERSE_DRAG,
+  REVERSE_ENGAGE_SPEED,
+  REVERSE_THRUST,
   SPRING,
   START_X,
 } from "../constants";
@@ -58,6 +61,9 @@ function createCarState(config: VehicleConfig): CarState {
 export class VehiclePhysics {
   readonly car: CarState;
   private config: VehicleConfig;
+  private bodyGrounded = false;
+  private reverseMode = false;
+  private brakeWasHeld = false;
 
   constructor(config: VehicleConfig) {
     this.config = config;
@@ -72,6 +78,9 @@ export class VehiclePhysics {
     const wheelCountChanged =
       config.wheelPositions.length !== this.config.wheelPositions.length;
     this.config = config;
+    this.bodyGrounded = false;
+    this.reverseMode = false;
+    this.brakeWasHeld = false;
     if (wheelCountChanged) {
       this.car.wheelSpin = new Array<number>(config.wheelPositions.length).fill(0);
       this.car.contact = new Array<boolean>(config.wheelPositions.length).fill(
@@ -86,8 +95,9 @@ export class VehiclePhysics {
 
   /** Park the car on the start line with every wheel resting on the slope. */
   reset(): void {
-    this.placeAt(START_X, 0.03);
+    this.placeAt(START_X, 0);
     this.car.maxX = START_X;
+    this.bodyGrounded = false;
   }
 
   /** Drop the car back onto the ridge after a crash / soft-lock. */
@@ -95,12 +105,57 @@ export class VehiclePhysics {
     this.placeAt(x, 0.32);
   }
 
+  /** Fit chassis pitch to the sampled ground under every wheel, then seat it. */
   private placeAt(x: number, lift: number): void {
     const car = this.car;
     const config = this.config;
+    const wheelCount = config.wheelPositions.length;
+    const ly = config.wheelLocalY;
+    let angle = Math.atan(slopeAt(x));
+
+    for (let iter = 0; iter < 3; iter++) {
+      const c = Math.cos(angle);
+      const s = Math.sin(angle);
+      let sumX = 0;
+      let sumY = 0;
+      const worldX: number[] = [];
+      const groundY: number[] = [];
+      for (let i = 0; i < wheelCount; i++) {
+        const lx = config.wheelPositions[i]!;
+        const wx = x + lx * c - ly * s;
+        const gy = heightAt(wx);
+        worldX.push(wx);
+        groundY.push(gy);
+        sumX += wx;
+        sumY += gy;
+      }
+      const meanX = sumX / wheelCount;
+      const meanY = sumY / wheelCount;
+      let num = 0;
+      let den = 0;
+      for (let i = 0; i < wheelCount; i++) {
+        const dx = worldX[i]! - meanX;
+        num += dx * (groundY[i]! - meanY);
+        den += dx * dx;
+      }
+      angle = Math.atan(den > 1e-9 ? num / den : slopeAt(x));
+    }
+
+    const c = Math.cos(angle);
+    const s = Math.sin(angle);
+    // The wheel centre sits r / cos(pitch) above the ground along world Y.
+    const radiusOffset = config.wheelRadius / Math.max(0.25, c);
+    let desiredYSum = 0;
+    for (let i = 0; i < wheelCount; i++) {
+      const lx = config.wheelPositions[i]!;
+      const wx = x + lx * c - ly * s;
+      const gy = heightAt(wx);
+      desiredYSum += gy - radiusOffset - lx * s - ly * c;
+    }
+
     car.x = x;
-    car.y = heightAt(x) - (config.wheelRadius + config.wheelLocalY + lift);
-    car.angle = Math.atan(slopeAt(x));
+    car.y = desiredYSum / wheelCount - lift;
+    car.angle = angle;
     car.vx = 0;
     car.vy = 0;
     car.omega = 0;
@@ -109,6 +164,9 @@ export class VehiclePhysics {
     car.contactCount = 0;
     car.crashed = false;
     car.crashTimer = 0;
+    this.bodyGrounded = false;
+    this.reverseMode = false;
+    this.brakeWasHeld = false;
     this.updateWheelWorld();
   }
 
@@ -153,8 +211,20 @@ export class VehiclePhysics {
   ): PhysicsEvents {
     const car = this.car;
     const config = this.config;
-    const wasGrounded = car.contactCount > 0;
+    const wasWheelGrounded = car.contactCount > 0;
+    const wasGrounded = wasWheelGrounded || this.bodyGrounded;
     const impacts: BodyImpact[] = [];
+
+    // The brake pedal doubles as reverse: braking at speed only slows the car,
+    // and a fresh press at a crawl engages reverse. Releasing the pedal, or
+    // holding both pedals, clears the mode so "brake wins" still holds.
+    const brakePressed = input.brake && !this.brakeWasHeld;
+    this.brakeWasHeld = input.brake;
+    if (!input.brake || input.gasHeld) {
+      this.reverseMode = false;
+    } else if (brakePressed && Math.abs(car.vx) < REVERSE_ENGAGE_SPEED) {
+      this.reverseMode = true;
+    }
 
     let ax = 0;
     let ay = GRAVITY;
@@ -213,13 +283,25 @@ export class VehiclePhysics {
           ft += config.engineBase * stats.engineFactor * share * NITRO_CRUISE;
         }
         if (input.brake) {
-          if (vt > 0.8) ft -= BRAKE * share;
-          else if (vt > -0.6) ft -= config.engineBase * 0.54 * share;
+          if (this.reverseMode) {
+            ft -= config.engineBase * REVERSE_THRUST * share;
+          } else if (vt > 0.8) {
+            ft -= BRAKE * share;
+          } else if (vt < -0.8) {
+            ft += BRAKE * share;
+          } else {
+            ft -= Math.sign(vt) * BRAKE * 0.35 * share;
+          }
+        }
+        if (vt < 0) {
+          // The low reverse gear has extra drivetrain drag, so reverse speed
+          // settles naturally instead of being clamped at a fixed value.
+          ft += Math.min(-vt * REVERSE_DRAG, 900) * share;
         }
         if (surface.rollingResistance > 0 && Math.abs(vt) > 0.05) {
           ft -= Math.sign(vt) * surface.rollingResistance * share;
         }
-        if (!input.throttle && !input.brake) {
+        if (!input.throttle) {
           ft -=
             Math.sign(vt) *
             Math.min(Math.abs(vt) * 16, 62) *
@@ -239,11 +321,13 @@ export class VehiclePhysics {
 
     // Soft chassis probes: rear bumper, belly and front bumper are a second
     // line of defence so sharp crests cannot clip straight through the body.
+    let bodyContact = false;
     for (const point of config.chassisPoints) {
       const wx = car.x + point.x * cosA - point.y * sinA;
       const wy = car.y + point.x * sinA + point.y * cosA;
       const gy = heightAt(wx);
       if (wy <= gy) continue;
+      bodyContact = true;
       const slope = slopeAt(wx);
       const norm = 1 / Math.sqrt(1 + slope * slope);
       const nx = slope * norm;
@@ -274,7 +358,10 @@ export class VehiclePhysics {
       }
     }
 
-    if (car.contactCount === 0 && !car.crashed) {
+    const wheelGrounded = car.contactCount > 0;
+    const grounded = wheelGrounded || bodyContact;
+
+    if (!grounded && !car.crashed) {
       // Running dry leaves only a faint weight-shift authority.
       const airTorque = input.canDrive ? config.rotTorque : 0.95;
       if (input.gasHeld && !input.brakeHeld) alpha -= airTorque;
@@ -289,8 +376,8 @@ export class VehiclePhysics {
       alpha -= car.omega * GROUND_DAMPING;
     }
 
-    // Night-summit updraft vents only bite while the wheels are off the ridge.
-    if (car.contactCount === 0) {
+    // Night-summit updraft vents only bite while the car is clear of the ridge.
+    if (!grounded) {
       const lift = updraftAt(car.x);
       if (lift > 0) ay -= 3.8 * lift;
     }
@@ -327,9 +414,14 @@ export class VehiclePhysics {
       }
     }
 
+    this.bodyGrounded = bodyContact;
+
     return {
       wasGrounded,
-      grounded: car.contactCount > 0,
+      grounded,
+      wasWheelGrounded,
+      wheelGrounded,
+      bodyContact,
       crashed,
       impacts,
     };

@@ -22,6 +22,12 @@ export const GRAVITY = 10.2;
 export const SPRING = 29000;
 export const DAMPER = 1650;
 export const BRAKE = 2550;
+/** Reverse gear thrust as a fraction of engine base; no hard speed cap. */
+export const REVERSE_THRUST = 0.42;
+/** Extra drivetrain drag while rolling backward (N per m/s); no hard speed cap. */
+export const REVERSE_DRAG = 70;
+/** Below this |vx|, a fresh brake press engages reverse instead of braking. */
+export const REVERSE_ENGAGE_SPEED = 0.3;
 export const AIR_DAMPING = 0.26;
 export const DUAL_PEDAL_DAMPING = 2.8;
 export const GROUND_DAMPING = 0.7;

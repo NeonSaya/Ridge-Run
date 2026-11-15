@@ -159,6 +159,9 @@ export interface BodyImpact {
 export interface PhysicsEvents {
   wasGrounded: boolean;
   grounded: boolean;
+  wasWheelGrounded: boolean;
+  wheelGrounded: boolean;
+  bodyContact: boolean;
   crashed: boolean;
   impacts: BodyImpact[];
 }

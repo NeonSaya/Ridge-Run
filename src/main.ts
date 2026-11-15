@@ -55,7 +55,11 @@ import {
   ghostProgress,
 } from "./ghost/GhostSystem";
 import type { GhostPose } from "./ghost/GhostSystem";
-import { MissionTracker, missionTitle } from "./missions";
+import {
+  MissionTracker,
+  missionTitle,
+  settleCompletedMissions,
+} from "./missions";
 import { LATEST_NOTICE_ID, NOTICES } from "./notices";
 import {
   biomePaletteAt,
@@ -921,6 +925,17 @@ function resolveRunConfig(mode: RunMode): RunConfig {
   };
 }
 
+function settleMissions(): void {
+  const nextCompleted = settleCompletedMissions(
+    missionTracker,
+    save.completedMissions,
+  );
+  if (nextCompleted !== save.completedMissions) {
+    save.completedMissions = nextCompleted;
+    persistSave(save, true);
+  }
+}
+
 function resetRun(): void {
   const config = VEHICLES[runConfig.vehicleId];
   stats = deriveVehicleStats(runConfig.upgrades);
@@ -990,7 +1005,7 @@ function resetRun(): void {
     dateKey: runConfig.dateKey,
     vehicleId: runConfig.vehicleId,
   });
-  missionTracker.reset();
+  settleMissions();
 
   items = [];
   particles.clear();
@@ -1126,11 +1141,7 @@ function endRun(reason: RunEndReason): void {
     if (mode === "daily" && dailyRecord) save.dailyGhost = finishedGhost;
   }
 
-  const completedMissions = save.missions.filter(
-    (mission) => mission.done,
-  ).length;
-  if (completedMissions > 0) save.completedMissions += completedMissions;
-  missionTracker.rotate(save.completedMissions);
+  settleMissions();
 
   if (endBounty > 0) {
     grantCoins(endBounty);
@@ -1343,6 +1354,7 @@ function updateMissions(dt: number): void {
       `+${mission.reward} 金币 · 已入账`,
     );
   }
+  if (completed.length > 0) persistSave(save, true);
   missionSyncClock += dt;
   if (completed.length > 0 || missionSyncClock >= 0.12) {
     missionSyncClock = 0;
@@ -1399,16 +1411,16 @@ function simulate(dt: number): void {
   }
   ghostRecorder.tick(dt, car.x, car.y, car.angle);
 
-  if (car.contactCount > 0 && !car.crashed) {
+  if (events.grounded && !car.crashed) {
     stuckTimer =
-      Math.abs(car.vx) < 0.35 && (throttle || brake) ? stuckTimer + dt : 0;
+      Math.abs(car.vx) < 0.35 && throttle ? stuckTimer + dt : 0;
     if (stuckTimer > 4 && fuel > 15) respawn(true);
   } else {
     stuckTimer = 0;
   }
 
   const groundedNow = events.grounded;
-  if (!groundedNow && events.wasGrounded && hasTouchedGround) beginJump();
+  if (!groundedNow && events.wasWheelGrounded && hasTouchedGround) beginJump();
   if (!groundedNow && jump.airborne) {
     jump.duration += dt;
     jump.airRotation += car.omega * dt;
@@ -1432,7 +1444,7 @@ function simulate(dt: number): void {
     particles.spawnDust(car.x - 0.75, car.y + 0.45, -1, car.vx);
     particles.spawnDust(car.x + 0.75, car.y + 0.45, 1, car.vx);
   }
-  if (groundedNow) hasTouchedGround = true;
+  if (events.wheelGrounded) hasTouchedGround = true;
   updateWheelie(dt);
 
   if (events.crashed) {

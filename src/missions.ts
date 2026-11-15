@@ -242,3 +242,22 @@ export class MissionTracker {
     this.reset();
   }
 }
+
+/**
+ * Settle completed contracts, rotate them to fresh non-duplicate kinds, and
+ * reset remaining run progress. Idempotent when nothing is done.
+ */
+export function settleCompletedMissions(
+  tracker: MissionTracker,
+  completedMissions: number,
+  random: () => number = Math.random,
+): number {
+  const completed = tracker.missions.filter((mission) => mission.done).length;
+  if (completed > 0) {
+    const nextCompleted = completedMissions + completed;
+    tracker.rotate(nextCompleted, random);
+    return nextCompleted;
+  }
+  tracker.reset();
+  return completedMissions;
+}

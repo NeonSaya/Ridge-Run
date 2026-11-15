@@ -92,6 +92,13 @@ function normalizeMission(value: unknown): MissionState | null {
   const reward = Math.floor(Number(source.reward));
   if (!Number.isFinite(target) || target < 1 || target > 100000) return null;
   if (!Number.isFinite(reward) || reward < 0 || reward > 10000) return null;
+  const done = source.done === true;
+  const rawProgress = Number(source.progress);
+  const progress = done
+    ? target
+    : Number.isFinite(rawProgress)
+      ? clamp(rawProgress, 0, target)
+      : 0;
   return {
     id:
       typeof source.id === "string" && source.id
@@ -100,8 +107,8 @@ function normalizeMission(value: unknown): MissionState | null {
     kind,
     target,
     reward,
-    progress: 0,
-    done: false,
+    progress,
+    done,
   };
 }
 
