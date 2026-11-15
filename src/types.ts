@@ -27,7 +27,7 @@ export type GhostKind = "pb" | "rival";
  * A compressed run replay. `frames` stores `[x, y, angle]` triplets: the
  * first is absolute in quantised units (0.1 m / 0.01 rad), every later frame
  * stores the delta from the previous one. `stride` is how many 0.15 s sample
- * ticks each stored frame spans (1 for locally recorded runs).
+ * ticks each stored frame spans (starts at 1 and doubles on overflow for long runs).
  */
 export interface GhostRecord {
   version: 1;
