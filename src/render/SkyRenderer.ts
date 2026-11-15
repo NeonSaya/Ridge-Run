@@ -9,6 +9,8 @@ export class SkyRenderer {
   private sunGradKey = "";
   private sunGlowGrad: CanvasGradient | null = null;
   private sunDiscGrad: CanvasGradient | null = null;
+  private lightShaftsKey = "";
+  private lightShaftsGrad: CanvasGradient | null = null;
   private auroraSprites: HTMLCanvasElement[] = [];
 
   draw(rc: RenderContext): void {
@@ -190,11 +192,16 @@ export class SkyRenderer {
     ctx.save();
     ctx.globalCompositeOperation = "screen";
     const x = W * 0.76, y = H * 0.32;
-    const glow = ctx.createRadialGradient(x, y, 4, x, y, H * 0.64);
-    glow.addColorStop(0, withAlpha(p.sunGlow, 0.045 * p.sunAlpha));
-    glow.addColorStop(0.45, withAlpha(p.sunGlow, 0.012 * p.sunAlpha));
-    glow.addColorStop(1, withAlpha(p.sunGlow, 0));
-    ctx.fillStyle = glow;
+    const key = `${ctx.getTransform().a}|${W}|${H}|${p.sunGlow}|${p.sunAlpha}`;
+    if (!this.lightShaftsGrad || this.lightShaftsKey !== key) {
+      const glow = ctx.createRadialGradient(x, y, 4, x, y, H * 0.64);
+      glow.addColorStop(0, withAlpha(p.sunGlow, 0.045 * p.sunAlpha));
+      glow.addColorStop(0.45, withAlpha(p.sunGlow, 0.012 * p.sunAlpha));
+      glow.addColorStop(1, withAlpha(p.sunGlow, 0));
+      this.lightShaftsGrad = glow;
+      this.lightShaftsKey = key;
+    }
+    ctx.fillStyle = this.lightShaftsGrad;
     for (let i = 0; i < 7; i++) {
       const a = 0.9 + i * 0.23;
       ctx.beginPath(); ctx.moveTo(x, y);
